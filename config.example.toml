@@ -1,0 +1,17 @@
+[pdfco]
+api_key = "your-pdfco-api-key"
+base_url = "https://api.pdf.co"
+
+[email]
+imap_host = "imap.example.com"
+imap_port = 993
+username = "user@example.com"
+password = "app-specific-password"
+mailbox = "INBOX"
+
+[ai_parser]
+api_key = "your-ai-parser-key"
+endpoint = "https://ai-parser.example.com/v1/parse"
+
+[queue]
+database_path = "data/queue.db"
