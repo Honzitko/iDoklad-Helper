@@ -154,6 +154,18 @@ class IDokladProcessor_Database {
             return 'https://api.idoklad.cz/api/v3';
         }
 
+        $api_url = trim($api_url);
+
+        if (stripos($api_url, '/help/') !== false) {
+            $parts = parse_url($api_url);
+
+            if ($parts && isset($parts['scheme'], $parts['host'])) {
+                return $parts['scheme'] . '://' . $parts['host'] . '/api/v3';
+            }
+
+            return 'https://api.idoklad.cz/api/v3';
+        }
+
         $api_url = rtrim($api_url, '/');
 
         if (preg_match('#/api/v\d+$#', $api_url)) {
