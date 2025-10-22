@@ -7,14 +7,23 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
+require_once __DIR__ . '/vendor/mervit/idoklad-v3/Exceptions/IDokladException.php';
+require_once __DIR__ . '/vendor/mervit/idoklad-v3/Endpoint.php';
+require_once __DIR__ . '/vendor/mervit/idoklad-v3/Client.php';
+
+use Mervit\iDoklad\Client as IDokladClient;
+use Mervit\iDoklad\Exceptions\IDokladException;
+
 class IDokladProcessor_IDokladAPI {
-    
+
     private $api_url;
     private $client_id;
     private $client_secret;
     private $access_token;
     private $token_expires_at;
     private $user_id;
+    /** @var IDokladClient|null */
+    private $client;
     
     public function __construct($user_credentials = null) {
         if ($user_credentials) {
@@ -28,6 +37,54 @@ class IDokladProcessor_IDokladAPI {
             $this->client_id = get_option('idoklad_client_id');
             $this->client_secret = get_option('idoklad_client_secret');
         }
+    }
+
+    /**
+     * Lazily build an iDoklad client leveraging the bundled SDK adapter.
+     *
+     * @return IDokladClient
+     */
+    private function get_client() {
+        if ($this->client instanceof IDokladClient) {
+            return $this->client;
+        }
+
+        $timeout = 30;
+        if (function_exists('get_option')) {
+            $timeout = intval(get_option('idoklad_http_timeout', $timeout));
+        }
+
+        $config = array(
+            'client_id' => $this->client_id,
+            'client_secret' => $this->client_secret,
+            'user_id' => $this->user_id,
+            'timeout' => max(5, $timeout),
+            'logger' => array($this, 'log_debug'),
+        );
+
+        $this->client = new IDokladClient($this->api_url ?: 'https://api.idoklad.cz/api/v3', $config);
+
+        return $this->client;
+    }
+
+    /**
+     * Debug logger used by the embedded SDK when WordPress debug mode is enabled.
+     *
+     * @param string $message
+     * @param array<string,mixed> $context
+     * @return void
+     */
+    public function log_debug($message, array $context = array()) {
+        if (!function_exists('get_option') || !get_option('idoklad_debug_mode')) {
+            return;
+        }
+
+        $formatted = 'iDoklad API: ' . $message;
+        if (!empty($context)) {
+            $formatted .= ' ' . (function_exists('wp_json_encode') ? wp_json_encode($context) : json_encode($context));
+        }
+
+        error_log($formatted);
     }
 
     /**
@@ -74,217 +131,342 @@ class IDokladProcessor_IDokladAPI {
      * Get access token using OAuth 2.0 Client Credentials flow
      */
     public function get_access_token() {
-        // Check if we have a valid cached token
-        if ($this->access_token && $this->token_expires_at && time() < $this->token_expires_at) {
+        if ($this->access_token && $this->token_expires_at && time() < $this->token_expires_at - 30) {
             return $this->access_token;
         }
-        
-        if (empty($this->client_id) || empty($this->client_secret)) {
-            throw new Exception('iDoklad API credentials are not configured for this user');
-        }
-        
-        // OAuth 2.0 Client Credentials flow endpoint
-        $token_url = 'https://app.idoklad.cz/identity/server/connect/token';
-        
-        // OAuth 2.0 client credentials flow parameters
-        $data = array(
-            'grant_type' => 'client_credentials',
-            'client_id' => $this->client_id,
-            'client_secret' => $this->client_secret,
-            'scope' => 'idoklad_api'
-        );
-        
-        $args = array(
-            'headers' => array(
-                'Content-Type' => 'application/x-www-form-urlencoded',
-                'Accept' => 'application/json',
-                'User-Agent' => 'WordPress-iDoklad-Processor/1.1.0'
-            ),
-            'body' => http_build_query($data),
-            'timeout' => 30,
-            'method' => 'POST',
-            'sslverify' => true
-        );
-        
-        if (get_option('idoklad_debug_mode')) {
-            error_log('iDoklad API: Requesting OAuth token from ' . $token_url);
-            error_log('iDoklad API: Request data: ' . http_build_query($data));
-            error_log('iDoklad API: Client ID: ' . $this->client_id);
-            error_log('iDoklad API: Client Secret: ' . substr($this->client_secret, 0, 8) . '...');
-        }
-        
-        $response = wp_remote_request($token_url, $args);
-        
-        if (is_wp_error($response)) {
-            $error_message = $response->get_error_message();
-            if (get_option('idoklad_debug_mode')) {
-                error_log('iDoklad API: WP Error: ' . $error_message);
+
+        try {
+            $access_token = $this->get_client()->getAccessToken();
+            $this->access_token = $access_token;
+            $last_response = $this->client ? $this->client->getLastResponseInfo() : array();
+            if (!empty($last_response['headers']['expires']) && empty($this->token_expires_at)) {
+                $this->token_expires_at = strtotime($last_response['headers']['expires']);
+            } elseif (empty($this->token_expires_at)) {
+                $this->token_expires_at = time() + 3600;
             }
-            throw new Exception('iDoklad OAuth token request failed: ' . $error_message);
+
+            return $access_token;
+        } catch (IDokladException $e) {
+            throw new Exception($e->getMessage(), $e->getCode(), $e);
         }
-        
-        $response_code = wp_remote_retrieve_response_code($response);
-        $response_body = wp_remote_retrieve_body($response);
-        
-        if (get_option('idoklad_debug_mode')) {
-            error_log('iDoklad API: OAuth Response code: ' . $response_code);
-            error_log('iDoklad API: OAuth Response body: ' . $response_body);
-        }
-        
-        if ($response_code !== 200) {
-            $error_data = json_decode($response_body, true);
-            $error_message = 'Unknown OAuth error';
-            
-            if (isset($error_data['error'])) {
-                $error_message = $error_data['error'];
-                if (isset($error_data['error_description'])) {
-                    $error_message .= ': ' . $error_data['error_description'];
-                }
-            } elseif (isset($error_data['message'])) {
-                $error_message = $error_data['message'];
-            }
-            
-            throw new Exception('iDoklad OAuth error (' . $response_code . '): ' . $error_message);
-        }
-        
-        $token_data = json_decode($response_body, true);
-        
-        if (!$token_data) {
-            throw new Exception('Invalid JSON response from iDoklad OAuth: ' . $response_body);
-        }
-        
-        if (!isset($token_data['access_token'])) {
-            throw new Exception('Invalid OAuth token response from iDoklad. Response: ' . $response_body);
-        }
-        
-        $this->access_token = $token_data['access_token'];
-        $this->token_expires_at = time() + (isset($token_data['expires_in']) ? $token_data['expires_in'] : 3600);
-        
-        if (get_option('idoklad_debug_mode')) {
-            error_log('iDoklad API: OAuth access token obtained successfully');
-        }
-        
-        return $this->access_token;
     }
     
     /**
      * Make authenticated API request with Bearer token
      */
     private function make_api_request($endpoint, $method = 'GET', $data = null, $store_response = false) {
-        $access_token = $this->get_access_token();
-        
-        $url = $this->api_url . $endpoint;
-        
-        $headers = array(
-            'Authorization' => 'Bearer ' . $access_token,
-            'Content-Type' => 'application/json',
-            'Accept' => 'application/json',
-            'User-Agent' => 'WordPress-iDoklad-Processor/1.1.0'
-        );
-        
-        $args = array(
-            'headers' => $headers,
-            'method' => $method,
-            'timeout' => 30,
-            'sslverify' => true
-        );
-        
-        if ($data && in_array($method, array('POST', 'PUT', 'PATCH'))) {
-            $args['body'] = json_encode($data);
+        $client = $this->get_client();
+
+        $options = array();
+        if ($data !== null && in_array($method, array('POST', 'PUT', 'PATCH'), true)) {
+            $options['json'] = $data;
         }
-        
-        if (get_option('idoklad_debug_mode')) {
-            error_log('iDoklad API: Making authenticated request to ' . $url . ' with method ' . $method);
-            error_log('iDoklad API: Using Bearer token: ' . substr($access_token, 0, 20) . '...');
-        }
-        
-        $response = wp_remote_request($url, $args);
-        
-        if (is_wp_error($response)) {
-            $error_message = $response->get_error_message();
-            if (get_option('idoklad_debug_mode')) {
-                error_log('iDoklad API: Request failed: ' . $error_message);
-            }
-            
-            // Store error response for diagnostics
-            if ($store_response) {
+
+        try {
+            $response = $client->request($method, $endpoint, $options);
+
+            if ($store_response && function_exists('update_option')) {
+                $info = $client->getLastResponseInfo();
                 update_option('idoklad_last_api_response', array(
-                    'error' => true,
-                    'message' => $error_message,
+                    'response_code' => $info['status_code'] ?? null,
+                    'response_body' => $info['body'] ?? null,
+                    'response_data' => $response,
                     'endpoint' => $endpoint,
                     'method' => $method,
                     'request_data' => $data,
-                    'timestamp' => time()
+                    'timestamp' => time(),
+                    'headers' => $info['headers'] ?? array(),
                 ), false);
             }
-            
-            throw new Exception('iDoklad API request failed: ' . $error_message);
-        }
-        
-        $response_code = wp_remote_retrieve_response_code($response);
-        $response_body = wp_remote_retrieve_body($response);
-        
-        if (get_option('idoklad_debug_mode')) {
-            error_log('iDoklad API: Response code: ' . $response_code);
-            error_log('iDoklad API: Response body: ' . $response_body);
-        }
-        
-        // Store response for diagnostics
-        if ($store_response) {
-            $response_data = json_decode($response_body, true);
-            update_option('idoklad_last_api_response', array(
-                'response_code' => $response_code,
-                'response_body' => $response_body,
-                'response_data' => $response_data,
+
+            return $response;
+        } catch (IDokladException $e) {
+            $info = $client->getLastResponseInfo();
+
+            if ($store_response && function_exists('update_option')) {
+                update_option('idoklad_last_api_response', array(
+                    'error' => true,
+                    'message' => $e->getMessage(),
+                    'endpoint' => $endpoint,
+                    'method' => $method,
+                    'request_data' => $data,
+                    'timestamp' => time(),
+                    'response_code' => $info['status_code'] ?? null,
+                    'response_body' => $info['body'] ?? null,
+                    'headers' => $info['headers'] ?? array(),
+                ), false);
+            }
+
+            $context = $e->getContext();
+            $this->log_debug('Request failed', array(
                 'endpoint' => $endpoint,
                 'method' => $method,
-                'request_data' => $data,
-                'timestamp' => time(),
-                'headers' => wp_remote_retrieve_headers($response)->getAll()
-            ), false);
+                'error' => $e->getMessage(),
+                'context' => $context,
+            ));
+
+            throw new Exception($e->getMessage(), $e->getCode(), $e);
         }
-        
-        if ($response_code >= 400) {
-            $error_data = json_decode($response_body, true);
-            $error_message = 'API request failed';
-            $error_details = array();
-            
-            if (isset($error_data['Message'])) {
-                $error_message = $error_data['Message'];
-            } elseif (isset($error_data['message'])) {
-                $error_message = $error_data['message'];
-            } elseif (isset($error_data['error'])) {
-                $error_message = $error_data['error'];
-            } elseif (isset($error_data['error_description'])) {
-                $error_message = $error_data['error_description'];
+    }
+
+    /**
+     * Generic helper to list resources through the SDK.
+     *
+     * @param string $resource
+     * @param array<string,mixed> $params
+     * @return array<string,mixed>|null
+     */
+    public function list_resource($resource, array $params = array()) {
+        $endpoint = '/' . ltrim($resource, '/');
+
+        $raw_query = array();
+        if (isset($params['filter_raw'])) {
+            $raw_query[] = 'filter=' . $params['filter_raw'];
+            unset($params['filter_raw']);
+        }
+
+        if (isset($params['raw_query'])) {
+            $raw_query[] = ltrim($params['raw_query'], '?&');
+            unset($params['raw_query']);
+        }
+
+        if (!empty($params)) {
+            $raw_query[] = http_build_query($params);
+        }
+
+        if (!empty($raw_query)) {
+            $endpoint .= '?' . implode('&', array_filter($raw_query));
+        }
+
+        return $this->get_client()->request('GET', $endpoint);
+    }
+
+    /**
+     * Generic helper to create a resource using the SDK.
+     *
+     * @param string $resource
+     * @param array<string,mixed> $payload
+     * @return array<string,mixed>|null
+     */
+    public function create_resource($resource, array $payload) {
+        return $this->get_client()->request('POST', '/' . ltrim($resource, '/'), array('json' => $payload));
+    }
+
+    /**
+     * Generic helper to update a resource by identifier.
+     *
+     * @param string $resource
+     * @param int|string $id
+     * @param array<string,mixed> $payload
+     * @return array<string,mixed>|null
+     */
+    public function update_resource($resource, $id, array $payload) {
+        $endpoint = '/' . trim($resource, '/') . '/' . $id;
+        return $this->get_client()->request('PUT', $endpoint, array('json' => $payload));
+    }
+
+    /**
+     * Delete a resource via the API.
+     *
+     * @param string $resource
+     * @param int|string $id
+     * @return array<string,mixed>|null
+     */
+    public function delete_resource($resource, $id) {
+        $endpoint = '/' . trim($resource, '/') . '/' . $id;
+        return $this->get_client()->request('DELETE', $endpoint);
+    }
+
+    /**
+     * Convenience wrappers for common documents.
+     */
+    public function list_sales_invoices(array $params = array()) {
+        return $this->list_resource('IssuedInvoices', $params);
+    }
+
+    public function list_received_invoices(array $params = array()) {
+        return $this->list_resource('ReceivedInvoices', $params);
+    }
+
+    public function list_expenses(array $params = array()) {
+        return $this->list_resource('Expenses', $params);
+    }
+
+    public function list_contacts(array $params = array()) {
+        return $this->list_resource('Contacts', $params);
+    }
+
+    /**
+     * Download a PDF representation of a document.
+     *
+     * @param string $resource
+     * @param int|string $id
+     * @return string|null
+     */
+    public function download_document_pdf($resource, $id) {
+        $endpoint = '/' . trim($resource, '/') . '/' . $id . '/Pdf';
+        return $this->get_client()->request('GET', $endpoint, array(
+            'headers' => array('Accept' => 'application/pdf'),
+            'decode' => false,
+        ));
+    }
+
+    /**
+     * Ensure an iDoklad contact exists for the supplied email address.
+     *
+     * @param string $email
+     * @param array<string,mixed> $contact_data
+     * @return array<string,mixed>|null
+     * @throws Exception
+     */
+    public function ensure_contact_for_email($email, array $contact_data = array()) {
+        $email = trim($email);
+        if (empty($email)) {
+            throw new Exception('Email address is required to synchronise contacts');
+        }
+
+        try {
+            $lookup = $this->list_resource('Contacts', array(
+                'filter_raw' => 'Email~eq~' . rawurlencode($email),
+                'pageSize' => 1,
+            ));
+
+            if (!empty($lookup['Data'][0])) {
+                return $lookup['Data'][0];
             }
-            
-            // iDoklad often returns validation errors in ModelState
-            if (isset($error_data['ModelState']) && is_array($error_data['ModelState'])) {
-                foreach ($error_data['ModelState'] as $field => $errors) {
-                    if (is_array($errors)) {
-                        $error_details[] = $field . ': ' . implode(', ', $errors);
-                    }
+        } catch (Exception $e) {
+            $this->log_debug('Contact lookup failed', array('email' => $email, 'error' => $e->getMessage()));
+        }
+
+        $payload = array(
+            'Name' => $contact_data['name'] ?? $email,
+            'Email' => $email,
+            'IsCompany' => (bool) ($contact_data['is_company'] ?? false),
+            'CountryId' => $contact_data['country_id'] ?? 1,
+            'Phone' => $contact_data['phone'] ?? null,
+            'Note' => $contact_data['note'] ?? null,
+            'IdentificationNumber' => $contact_data['identification_number'] ?? null,
+            'VatNumber' => $contact_data['vat_number'] ?? null,
+        );
+
+        $payload = array_filter($payload, function ($value) {
+            return $value !== null && $value !== '';
+        });
+
+        $created = $this->create_resource('Contacts', $payload);
+
+        return $created;
+    }
+
+    /**
+     * Record an email interaction for traceability.
+     *
+     * @param array<string,mixed> $email_meta
+     * @param array<int,array<string,mixed>> $attachments
+     * @param string $status
+     * @return void
+     */
+    public function record_email_activity(array $email_meta, array $attachments = array(), $status = 'received') {
+        $email_address = $email_meta['from'] ?? ($email_meta['email_from'] ?? null);
+        if (empty($email_address)) {
+            return;
+        }
+
+        $note = $this->format_email_note($email_meta, $attachments, $status);
+
+        try {
+            $contact = $this->ensure_contact_for_email($email_address, array(
+                'name' => $email_meta['sender_name'] ?? ($email_meta['name'] ?? $email_address),
+                'note' => $email_meta['subject'] ?? '',
+            ));
+
+            $contact_id = is_array($contact) ? ($contact['Id'] ?? null) : null;
+
+            if ($contact_id) {
+                try {
+                    $this->make_api_request('/Contacts/' . $contact_id . '/Notes', 'POST', array('Note' => $note));
+                } catch (Exception $note_exception) {
+                    $this->log_debug('Unable to attach note to contact', array(
+                        'contact_id' => $contact_id,
+                        'error' => $note_exception->getMessage(),
+                    ));
                 }
             }
-            
-            // Add validation errors if present
-            if (!empty($error_details)) {
-                $error_message .= ' | Validation errors: ' . implode(' | ', $error_details);
-            }
-            
-            // Include full response for debugging
-            if (get_option('idoklad_debug_mode')) {
-                error_log('iDoklad API: Full error response: ' . $response_body);
-                if ($data) {
-                    error_log('iDoklad API: Request data was: ' . json_encode($data, JSON_PRETTY_PRINT));
-                }
-            }
-            
-            throw new Exception('iDoklad API error (' . $response_code . '): ' . $error_message);
+        } catch (Exception $e) {
+            $this->log_debug('Failed to record email activity in iDoklad', array(
+                'email' => $email_address,
+                'error' => $e->getMessage(),
+            ));
         }
-        
-        return json_decode($response_body, true);
+
+        if (function_exists('do_action')) {
+            do_action('idoklad_email_activity_recorded', $email_meta, $attachments, $status);
+        }
+    }
+
+    /**
+     * Build a readable note body summarising the email interaction.
+     *
+     * @param array<string,mixed> $email_meta
+     * @param array<int,array<string,mixed>> $attachments
+     * @param string $status
+     * @return string
+     */
+    private function format_email_note(array $email_meta, array $attachments, $status) {
+        $lines = array();
+        $lines[] = 'Email status: ' . ucfirst($status);
+
+        if (!empty($email_meta['subject'])) {
+            $lines[] = 'Subject: ' . $email_meta['subject'];
+        }
+
+        if (!empty($email_meta['email_id'])) {
+            $lines[] = 'Message ID: ' . $email_meta['email_id'];
+        }
+
+        if (!empty($email_meta['received_at'])) {
+            $lines[] = 'Received at: ' . $email_meta['received_at'];
+        }
+
+        if (!empty($attachments)) {
+            $lines[] = 'Attachments:';
+            foreach ($attachments as $attachment) {
+                $label = $attachment['name'] ?? ($attachment['filename'] ?? 'file');
+                $size = isset($attachment['size']) ? $this->human_readable_file_size($attachment['size']) : null;
+                $lines[] = ' - ' . $label . ($size ? ' (' . $size . ')' : '');
+            }
+        }
+
+        if (!empty($email_meta['document_number'])) {
+            $lines[] = 'Document number: ' . $email_meta['document_number'];
+        }
+
+        if (!empty($email_meta['notes'])) {
+            $lines[] = 'Notes: ' . $email_meta['notes'];
+        }
+
+        return implode("\n", $lines);
+    }
+
+    /**
+     * Convert file size to a readable format.
+     *
+     * @param int $bytes
+     * @return string
+     */
+    private function human_readable_file_size($bytes) {
+        $bytes = (int) $bytes;
+        if ($bytes <= 0) {
+            return '0 B';
+        }
+
+        $units = array('B', 'KB', 'MB', 'GB');
+        $power = (int) floor(log($bytes, 1024));
+        $power = min($power, count($units) - 1);
+
+        $value = $bytes / pow(1024, $power);
+
+        return round($value, 2) . ' ' . $units[$power];
     }
     
     /**
@@ -408,33 +590,40 @@ class IDokladProcessor_IDokladAPI {
         
         // Try to find existing supplier
         try {
-            $suppliers = $this->make_api_request('/Contacts?filter=Name~eq~' . urlencode($supplier_name));
-            
+            $suppliers = $this->list_resource('Contacts', array(
+                'filter_raw' => 'Name~eq~' . rawurlencode($supplier_name),
+                'pageSize' => 1,
+            ));
+
             if (!empty($suppliers['Data']) && count($suppliers['Data']) > 0) {
                 $supplier = $suppliers['Data'][0];
                 return $supplier['Id'];
             }
         } catch (Exception $e) {
-            if (get_option('idoklad_debug_mode')) {
+            if (function_exists('get_option') && get_option('idoklad_debug_mode')) {
                 error_log('iDoklad API: Could not search for existing supplier: ' . $e->getMessage());
             }
         }
-        
+
         // Create new supplier
         $supplier_data = array(
             'Name' => $supplier_name,
             'IsCompany' => true,
-            'CountryId' => 1, // Czech Republic - you might want to make this configurable
+            'CountryId' => 1, // Czech Republic - configurable via transformer if needed
             'IsActive' => true
         );
-        
+
         // Add VAT number if available
         if (!empty($extracted_data['supplier_vat_number'])) {
             $supplier_data['IdentificationNumber'] = $extracted_data['supplier_vat_number'];
         }
-        
-        $supplier_response = $this->make_api_request('/Contacts', 'POST', $supplier_data);
-        
+
+        if (!empty($extracted_data['supplier_email'])) {
+            $supplier_data['Email'] = $extracted_data['supplier_email'];
+        }
+
+        $supplier_response = $this->create_resource('Contacts', $supplier_data);
+
         return $supplier_response['Id'];
     }
     
