@@ -145,17 +145,36 @@ class IDokladProcessor_EmailMonitor {
                 return;
             }
             
+            // Prepare API helper for user-scoped operations
+            $idoklad_api = new IDokladProcessor_IDokladAPI($authorized_user);
+
+            $received_at = isset($header->udate) ? gmdate('Y-m-d H:i:s', $header->udate) : (function_exists('current_time') ? current_time('mysql') : date('Y-m-d H:i:s'));
+            $email_meta = array(
+                'from' => $from_email,
+                'subject' => $subject,
+                'email_id' => $email_id,
+                'received_at' => $received_at,
+            );
+
+            try {
+                $idoklad_api->record_email_activity($email_meta, array(), 'received');
+            } catch (Exception $activity_exception) {
+                if (get_option('idoklad_debug_mode')) {
+                    error_log('iDoklad Email Monitor: Unable to record email reception: ' . $activity_exception->getMessage());
+                }
+            }
+
             // Get email attachments
             $attachments = $this->get_email_attachments($email_id);
-            
+
             if (empty($attachments)) {
                 if (get_option('idoklad_debug_mode')) {
                     error_log('iDoklad Email Monitor: No attachments found in email from ' . $from_email);
                 }
-                
+
                 // Mark email as read
                 imap_setflag_full($this->connection, $email_id, '\\Seen');
-                
+
                 // Log no attachment
                 IDokladProcessor_Database::add_log(array(
                     'email_from' => $from_email,
@@ -163,14 +182,23 @@ class IDokladProcessor_EmailMonitor {
                     'processing_status' => 'failed',
                     'error_message' => 'No PDF attachments found'
                 ));
-                
+
+                try {
+                    $email_meta['notes'] = 'Email skipped: no PDF attachments detected';
+                    $idoklad_api->record_email_activity($email_meta, array(), 'failed');
+                } catch (Exception $activity_exception) {
+                    if (get_option('idoklad_debug_mode')) {
+                        error_log('iDoklad Email Monitor: Unable to record missing attachment activity: ' . $activity_exception->getMessage());
+                    }
+                }
+
                 return;
             }
             
             // Process each PDF attachment
             foreach ($attachments as $attachment) {
                 if ($this->is_pdf_attachment($attachment)) {
-                    $this->process_pdf_attachment($email_id, $from_email, $subject, $attachment, $authorized_user);
+                    $this->process_pdf_attachment($email_id, $from_email, $subject, $attachment, $authorized_user, $idoklad_api);
                 }
             }
             
@@ -270,29 +298,29 @@ class IDokladProcessor_EmailMonitor {
     /**
      * Process PDF attachment
      */
-    private function process_pdf_attachment($email_id, $from_email, $subject, $attachment, $authorized_user) {
+    private function process_pdf_attachment($email_id, $from_email, $subject, $attachment, $authorized_user, $idoklad_api = null) {
         if (get_option('idoklad_debug_mode')) {
             error_log('iDoklad Email Monitor: Processing PDF attachment: ' . $attachment['filename']);
         }
-        
+
         // Create uploads directory if it doesn't exist
         $upload_dir = wp_upload_dir();
         $idoklad_dir = $upload_dir['basedir'] . '/idoklad-invoices';
-        
+
         if (!file_exists($idoklad_dir)) {
             wp_mkdir_p($idoklad_dir);
         }
-        
+
         // Generate unique filename
         $filename = sanitize_file_name($attachment['filename']);
         $unique_filename = date('Y-m-d_H-i-s') . '_' . $email_id . '_' . $filename;
         $file_path = $idoklad_dir . '/' . $unique_filename;
-        
+
         // Save attachment to file
         if (file_put_contents($file_path, $attachment['data']) === false) {
             throw new Exception('Failed to save PDF attachment');
         }
-        
+
         // Add to processing queue
         $queue_data = array(
             'email_id' => $email_id . '_' . md5($attachment['filename']),
@@ -300,17 +328,50 @@ class IDokladProcessor_EmailMonitor {
             'email_subject' => $subject,
             'attachment_path' => $file_path
         );
-        
-        IDokladProcessor_Database::add_to_queue($queue_data);
-        
+
+        $queue_inserted = IDokladProcessor_Database::add_to_queue($queue_data);
+        $queue_id = null;
+
+        if ($queue_inserted) {
+            global $wpdb;
+            $queue_id = $wpdb->insert_id;
+        }
+
         // Log processing start
-        $log_id = IDokladProcessor_Database::add_log(array(
+        IDokladProcessor_Database::add_log(array(
             'email_from' => $from_email,
             'email_subject' => $subject,
             'attachment_name' => $attachment['filename'],
             'processing_status' => 'pending'
         ));
-        
+
+        if (!$idoklad_api instanceof IDokladProcessor_IDokladAPI) {
+            $idoklad_api = new IDokladProcessor_IDokladAPI($authorized_user);
+        }
+
+        try {
+            $idoklad_api->record_email_activity(
+                array(
+                    'from' => $from_email,
+                    'subject' => $subject,
+                    'email_id' => $email_id,
+                    'received_at' => function_exists('current_time') ? current_time('mysql') : date('Y-m-d H:i:s'),
+                    'notes' => $queue_id ? 'Attachment queued under ID ' . $queue_id : 'Attachment queued for processing',
+                ),
+                array(
+                    array(
+                        'name' => $attachment['filename'],
+                        'size' => $attachment['size'] ?? 0,
+                    )
+                ),
+                'queued'
+            );
+        } catch (Exception $activity_exception) {
+            if (get_option('idoklad_debug_mode')) {
+                error_log('iDoklad Email Monitor: Unable to record attachment event: ' . $activity_exception->getMessage());
+            }
+        }
+
         if (get_option('idoklad_debug_mode')) {
             error_log('iDoklad Email Monitor: Added to queue - Email: ' . $from_email . ', File: ' . $attachment['filename']);
         }
@@ -342,33 +403,37 @@ class IDokladProcessor_EmailMonitor {
                 
             } catch (Exception $e) {
                 error_log('iDoklad Email Monitor: Error processing email ' . $email->id . ': ' . $e->getMessage());
-                
+
                 // Add error to queue steps
                 IDokladProcessor_Database::add_queue_step($email->id, 'ERROR: Processing failed', array(
                     'error' => $e->getMessage(),
                     'trace' => substr($e->getTraceAsString(), 0, 500)
                 ));
-                
+
                 // Mark as failed
                 IDokladProcessor_Database::update_queue_status($email->id, 'failed', true);
-                
+
                 // Update log
                 $this->update_log_for_email($email, 'failed', null, null, $e->getMessage());
+
+                $this->record_failure_activity($email, $e->getMessage());
             } catch (Error $e) {
                 // Catch fatal errors (PHP 7+)
                 error_log('iDoklad Email Monitor: Fatal error processing email ' . $email->id . ': ' . $e->getMessage());
-                
+
                 // Add error to queue steps
                 IDokladProcessor_Database::add_queue_step($email->id, 'ERROR: Fatal error occurred', array(
                     'error' => $e->getMessage(),
                     'trace' => substr($e->getTraceAsString(), 0, 500)
                 ));
-                
+
                 // Mark as failed
                 IDokladProcessor_Database::update_queue_status($email->id, 'failed', true);
-                
+
                 // Update log
                 $this->update_log_for_email($email, 'failed', null, null, 'Fatal error: ' . $e->getMessage());
+
+                $this->record_failure_activity($email, $e->getMessage());
             }
         }
         
@@ -415,10 +480,50 @@ class IDokladProcessor_EmailMonitor {
         
         // Step 3: Initialize processors
         IDokladProcessor_Database::add_queue_step($email->id, 'Initializing processors');
-        
+
         $pdf_processor = new IDokladProcessor_PDFProcessor();
         $idoklad_api = new IDokladProcessor_IDokladAPI($authorized_user); // Pass user credentials
         $notification = new IDokladProcessor_Notification();
+
+        $attachment_info = array(
+            array(
+                'name' => basename($email->attachment_path),
+                'size' => file_exists($email->attachment_path) ? filesize($email->attachment_path) : 0,
+            )
+        );
+
+        try {
+            $idoklad_api->record_email_activity(
+                array(
+                    'from' => $email->email_from,
+                    'subject' => $email->email_subject,
+                    'email_id' => $email->email_id ?? $email->id,
+                    'received_at' => function_exists('current_time') ? current_time('mysql') : date('Y-m-d H:i:s'),
+                    'notes' => 'Queue processing started',
+                ),
+                $attachment_info,
+                'processing'
+            );
+        } catch (Exception $activity_exception) {
+            IDokladProcessor_Database::add_queue_step($email->id, 'WARNING: Unable to record processing activity', array(
+                'error' => $activity_exception->getMessage(),
+            ), false);
+        }
+
+        try {
+            $contact = $idoklad_api->ensure_contact_for_email($email->email_from, array(
+                'name' => $authorized_user->name ?? $email->email_from,
+                'note' => $email->email_subject,
+            ));
+
+            IDokladProcessor_Database::add_queue_step($email->id, 'Sender contact synchronised with iDoklad', array(
+                'contact_id' => is_array($contact) ? ($contact['Id'] ?? null) : null,
+            ), false);
+        } catch (Exception $contact_exception) {
+            IDokladProcessor_Database::add_queue_step($email->id, 'WARNING: Unable to sync sender contact', array(
+                'error' => $contact_exception->getMessage(),
+            ), false);
+        }
         
         // Step 4: Process PDF with AI Parser (preferred) or fallback to text extraction
         IDokladProcessor_Database::add_queue_step($email->id, 'Processing PDF with AI Parser', array(
@@ -643,7 +748,26 @@ class IDokladProcessor_EmailMonitor {
         IDokladProcessor_Database::add_queue_step($email->id, 'Invoice created in iDoklad successfully', array(
             'response' => is_array($idoklad_response) ? array_keys($idoklad_response) : 'Response received'
         ));
-        
+
+        try {
+            $idoklad_api->record_email_activity(
+                array(
+                    'from' => $email->email_from,
+                    'subject' => $email->email_subject,
+                    'email_id' => $email->email_id ?? $email->id,
+                    'received_at' => function_exists('current_time') ? current_time('mysql') : date('Y-m-d H:i:s'),
+                    'document_number' => $idoklad_data['DocumentNumber'] ?? ($idoklad_response['DocumentNumber'] ?? null),
+                    'notes' => 'Invoice created successfully',
+                ),
+                $attachment_info,
+                'processed'
+            );
+        } catch (Exception $activity_exception) {
+            IDokladProcessor_Database::add_queue_step($email->id, 'WARNING: Unable to record processed activity', array(
+                'error' => $activity_exception->getMessage(),
+            ), false);
+        }
+
         // Step 9: Update log with success
         $this->update_log_for_email($email, 'success', $extracted_data, $idoklad_response);
         
@@ -661,7 +785,45 @@ class IDokladProcessor_EmailMonitor {
             error_log('iDoklad Email Monitor: Successfully processed email from ' . $email->email_from);
         }
     }
-    
+
+    /**
+     * Record failure activity across the iDoklad API when processing fails.
+     */
+    private function record_failure_activity($email, $error_message) {
+        $authorized_user = IDokladProcessor_Database::get_authorized_user($email->email_from);
+        if (!$authorized_user) {
+            return;
+        }
+
+        try {
+            $idoklad_api = new IDokladProcessor_IDokladAPI($authorized_user);
+
+            $attachments = array();
+            if (!empty($email->attachment_path)) {
+                $attachments[] = array(
+                    'name' => basename($email->attachment_path),
+                    'size' => file_exists($email->attachment_path) ? filesize($email->attachment_path) : 0,
+                );
+            }
+
+            $idoklad_api->record_email_activity(
+                array(
+                    'from' => $email->email_from,
+                    'subject' => $email->email_subject,
+                    'email_id' => $email->email_id ?? $email->id,
+                    'received_at' => function_exists('current_time') ? current_time('mysql') : date('Y-m-d H:i:s'),
+                    'notes' => 'Processing failed: ' . $error_message,
+                ),
+                $attachments,
+                'failed'
+            );
+        } catch (Exception $activity_exception) {
+            if (get_option('idoklad_debug_mode')) {
+                error_log('iDoklad Email Monitor: Unable to record failure activity: ' . $activity_exception->getMessage());
+            }
+        }
+    }
+
     /**
      * Update log for email processing
      */
