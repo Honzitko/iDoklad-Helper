@@ -352,9 +352,14 @@ class IDokladProcessor_IDokladAPI {
     }
     
     /**
-     * Get or create supplier
+     * Get or create supplier contact in iDoklad.
+     *
+     * Exposed publicly so other components (like the email monitor) can ensure
+     * that a valid PartnerId exists before attempting to create a received
+     * invoice. The API rejects payloads where PartnerId is 0 or missing, so we
+     * always create or look up the supplier first.
      */
-    private function get_or_create_supplier($extracted_data) {
+    public function get_or_create_supplier($extracted_data) {
         $supplier_name = $extracted_data['supplier_name'];
         
         if (empty($supplier_name)) {
