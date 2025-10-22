@@ -1,891 +1,693 @@
 <?php
 /**
- * iDoklad API integration class - Fixed with proper authentication
+ * iDoklad API integration rebuilt from scratch to follow the exact
+ * authentication and invoice-creation flow required by the live API.
  */
 
 if (!defined('ABSPATH')) {
     exit;
 }
 
-require_once __DIR__ . '/vendor/mervit/idoklad-v3/Exceptions/IDokladException.php';
-require_once __DIR__ . '/vendor/mervit/idoklad-v3/Endpoint.php';
-require_once __DIR__ . '/vendor/mervit/idoklad-v3/Client.php';
-
-use Mervit\iDoklad\Client as IDokladClient;
-use Mervit\iDoklad\Exceptions\IDokladException;
-
 class IDokladProcessor_IDokladAPI {
 
-    private $api_url;
+    /** @var string */
     private $client_id;
+
+    /** @var string */
     private $client_secret;
+
+    /** @var string|null */
     private $access_token;
+
+    /** @var int|null */
     private $token_expires_at;
-    private $user_id;
-    /** @var IDokladClient|null */
-    private $client;
-    
+
+    /** @var int */
+    private $http_timeout = 30;
+
+    /** @var string */
+    private $identity_url = 'https://identity.idoklad.cz/server/connect/token';
+
+    /** @var string */
+    private $api_base_url = 'https://api.idoklad.cz/v3';
+
+    /**
+     * Constructor accepts optional user credentials; falls back to global
+     * WordPress options when executed within the plugin.
+     *
+     * @param object|null $user_credentials
+     */
     public function __construct($user_credentials = null) {
         if ($user_credentials) {
-            $this->api_url = $this->normalize_api_url($user_credentials->idoklad_api_url ?? null);
-            $this->client_id = $user_credentials->idoklad_client_id;
-            $this->client_secret = $user_credentials->idoklad_client_secret;
-            $this->user_id = $user_credentials->idoklad_user_id;
+            $this->client_id = $user_credentials->idoklad_client_id ?? '';
+            $this->client_secret = $user_credentials->idoklad_client_secret ?? '';
         } else {
-            // Fallback to global settings (deprecated)
-            $this->api_url = $this->normalize_api_url(get_option('idoklad_api_url'));
-            $this->client_id = get_option('idoklad_client_id');
-            $this->client_secret = get_option('idoklad_client_secret');
-        }
-    }
-
-    /**
-     * Lazily build an iDoklad client leveraging the bundled SDK adapter.
-     *
-     * @return IDokladClient
-     */
-    private function get_client() {
-        if ($this->client instanceof IDokladClient) {
-            return $this->client;
-        }
-
-        $timeout = 30;
-        if (function_exists('get_option')) {
-            $timeout = intval(get_option('idoklad_http_timeout', $timeout));
-        }
-
-        $config = array(
-            'client_id' => $this->client_id,
-            'client_secret' => $this->client_secret,
-            'user_id' => $this->user_id,
-            'timeout' => max(5, $timeout),
-            'logger' => array($this, 'log_debug'),
-        );
-
-        $this->client = new IDokladClient($this->api_url ?: 'https://api.idoklad.cz/api/v3', $config);
-
-        return $this->client;
-    }
-
-    /**
-     * Debug logger used by the embedded SDK when WordPress debug mode is enabled.
-     *
-     * @param string $message
-     * @param array<string,mixed> $context
-     * @return void
-     */
-    public function log_debug($message, array $context = array()) {
-        if (!function_exists('get_option') || !get_option('idoklad_debug_mode')) {
-            return;
-        }
-
-        $formatted = 'iDoklad API: ' . $message;
-        if (!empty($context)) {
-            $formatted .= ' ' . (function_exists('wp_json_encode') ? wp_json_encode($context) : json_encode($context));
-        }
-
-        error_log($formatted);
-    }
-
-    /**
-     * Ensure the API base URL always targets the documented /api/v3 endpoints.
-     */
-    private function normalize_api_url($api_url) {
-        if (empty($api_url)) {
-            $api_url = 'https://api.idoklad.cz/api/v3';
-        }
-
-        $api_url = trim($api_url);
-
-        // Handle accidental copies of the public documentation URL
-        // (e.g. https://api.idoklad.cz/Help/v3/cs/index.html) by
-        // converting them back to the real API base path.
-        if (stripos($api_url, '/help/') !== false) {
-            $parts = parse_url($api_url);
-
-            if ($parts && isset($parts['scheme'], $parts['host'])) {
-                return $parts['scheme'] . '://' . $parts['host'] . '/api/v3';
+            if (function_exists('get_option')) {
+                $this->client_id = (string) get_option('idoklad_client_id', '');
+                $this->client_secret = (string) get_option('idoklad_client_secret', '');
+                $timeout = (int) get_option('idoklad_http_timeout', $this->http_timeout);
+                if ($timeout > 0) {
+                    $this->http_timeout = $timeout;
+                }
             }
-
-            return 'https://api.idoklad.cz/api/v3';
-        }
-
-        $api_url = rtrim($api_url, '/');
-
-        if (preg_match('#/api/v\d+$#', $api_url)) {
-            return $api_url;
-        }
-
-        if (preg_match('#/v(\d+)$#', $api_url)) {
-            return preg_replace('#/v(\d+)$#', '/api/v$1', $api_url);
-        }
-
-        if (preg_match('#/api$#', $api_url)) {
-            return $api_url . '/v3';
-        }
-
-        return $api_url . '/api/v3';
-    }
-    
-    /**
-     * Get access token using OAuth 2.0 Client Credentials flow
-     */
-    public function get_access_token() {
-        if ($this->access_token && $this->token_expires_at && time() < $this->token_expires_at - 30) {
-            return $this->access_token;
-        }
-
-        try {
-            $access_token = $this->get_client()->getAccessToken();
-            $this->access_token = $access_token;
-            $last_response = $this->client ? $this->client->getLastResponseInfo() : array();
-            if (!empty($last_response['headers']['expires']) && empty($this->token_expires_at)) {
-                $this->token_expires_at = strtotime($last_response['headers']['expires']);
-            } elseif (empty($this->token_expires_at)) {
-                $this->token_expires_at = time() + 3600;
-            }
-
-            return $access_token;
-        } catch (IDokladException $e) {
-            throw new Exception($e->getMessage(), $e->getCode(), $e);
-        }
-    }
-    
-    /**
-     * Make authenticated API request with Bearer token
-     */
-    private function make_api_request($endpoint, $method = 'GET', $data = null, $store_response = false) {
-        $client = $this->get_client();
-
-        $options = array();
-        if ($data !== null && in_array($method, array('POST', 'PUT', 'PATCH'), true)) {
-            $options['json'] = $data;
-        }
-
-        try {
-            $response = $client->request($method, $endpoint, $options);
-
-            if ($store_response && function_exists('update_option')) {
-                $info = $client->getLastResponseInfo();
-                update_option('idoklad_last_api_response', array(
-                    'response_code' => $info['status_code'] ?? null,
-                    'response_body' => $info['body'] ?? null,
-                    'response_data' => $response,
-                    'endpoint' => $endpoint,
-                    'method' => $method,
-                    'request_data' => $data,
-                    'timestamp' => time(),
-                    'headers' => $info['headers'] ?? array(),
-                ), false);
-            }
-
-            return $response;
-        } catch (IDokladException $e) {
-            $info = $client->getLastResponseInfo();
-
-            if ($store_response && function_exists('update_option')) {
-                update_option('idoklad_last_api_response', array(
-                    'error' => true,
-                    'message' => $e->getMessage(),
-                    'endpoint' => $endpoint,
-                    'method' => $method,
-                    'request_data' => $data,
-                    'timestamp' => time(),
-                    'response_code' => $info['status_code'] ?? null,
-                    'response_body' => $info['body'] ?? null,
-                    'headers' => $info['headers'] ?? array(),
-                ), false);
-            }
-
-            $context = $e->getContext();
-            $this->log_debug('Request failed', array(
-                'endpoint' => $endpoint,
-                'method' => $method,
-                'error' => $e->getMessage(),
-                'context' => $context,
-            ));
-
-            throw new Exception($e->getMessage(), $e->getCode(), $e);
         }
     }
 
     /**
-     * Generic helper to list resources through the SDK.
+     * Public alias maintained for backwards compatibility. The received
+     * context array may include PartnerId or partner details; all other data is
+     * ignored so the payload matches the mandated structure.
      *
-     * @param string $resource
-     * @param array<string,mixed> $params
-     * @return array<string,mixed>|null
-     */
-    public function list_resource($resource, array $params = array()) {
-        $endpoint = '/' . ltrim($resource, '/');
-
-        $raw_query = array();
-        if (isset($params['filter_raw'])) {
-            $raw_query[] = 'filter=' . $params['filter_raw'];
-            unset($params['filter_raw']);
-        }
-
-        if (isset($params['raw_query'])) {
-            $raw_query[] = ltrim($params['raw_query'], '?&');
-            unset($params['raw_query']);
-        }
-
-        if (!empty($params)) {
-            $raw_query[] = http_build_query($params);
-        }
-
-        if (!empty($raw_query)) {
-            $endpoint .= '?' . implode('&', array_filter($raw_query));
-        }
-
-        return $this->get_client()->request('GET', $endpoint);
-    }
-
-    /**
-     * Generic helper to create a resource using the SDK.
-     *
-     * @param string $resource
-     * @param array<string,mixed> $payload
-     * @return array<string,mixed>|null
-     */
-    public function create_resource($resource, array $payload) {
-        return $this->get_client()->request('POST', '/' . ltrim($resource, '/'), array('json' => $payload));
-    }
-
-    /**
-     * Generic helper to update a resource by identifier.
-     *
-     * @param string $resource
-     * @param int|string $id
-     * @param array<string,mixed> $payload
-     * @return array<string,mixed>|null
-     */
-    public function update_resource($resource, $id, array $payload) {
-        $endpoint = '/' . trim($resource, '/') . '/' . $id;
-        return $this->get_client()->request('PUT', $endpoint, array('json' => $payload));
-    }
-
-    /**
-     * Delete a resource via the API.
-     *
-     * @param string $resource
-     * @param int|string $id
-     * @return array<string,mixed>|null
-     */
-    public function delete_resource($resource, $id) {
-        $endpoint = '/' . trim($resource, '/') . '/' . $id;
-        return $this->get_client()->request('DELETE', $endpoint);
-    }
-
-    /**
-     * Convenience wrappers for common documents.
-     */
-    public function list_sales_invoices(array $params = array()) {
-        return $this->list_resource('IssuedInvoices', $params);
-    }
-
-    public function list_received_invoices(array $params = array()) {
-        return $this->list_resource('ReceivedInvoices', $params);
-    }
-
-    public function list_expenses(array $params = array()) {
-        return $this->list_resource('Expenses', $params);
-    }
-
-    public function list_contacts(array $params = array()) {
-        return $this->list_resource('Contacts', $params);
-    }
-
-    /**
-     * Download a PDF representation of a document.
-     *
-     * @param string $resource
-     * @param int|string $id
-     * @return string|null
-     */
-    public function download_document_pdf($resource, $id) {
-        $endpoint = '/' . trim($resource, '/') . '/' . $id . '/Pdf';
-        return $this->get_client()->request('GET', $endpoint, array(
-            'headers' => array('Accept' => 'application/pdf'),
-            'decode' => false,
-        ));
-    }
-
-    /**
-     * Ensure an iDoklad contact exists for the supplied email address.
-     *
-     * @param string $email
-     * @param array<string,mixed> $contact_data
-     * @return array<string,mixed>|null
+     * @param array $context
+     * @return array
      * @throws Exception
      */
-    public function ensure_contact_for_email($email, array $contact_data = array()) {
-        $email = trim($email);
-        if (empty($email)) {
-            throw new Exception('Email address is required to synchronise contacts');
-        }
-
-        try {
-            $lookup = $this->list_resource('Contacts', array(
-                'filter_raw' => 'Email~eq~' . rawurlencode($email),
-                'pageSize' => 1,
-            ));
-
-            if (!empty($lookup['Data'][0])) {
-                return $lookup['Data'][0];
-            }
-        } catch (Exception $e) {
-            $this->log_debug('Contact lookup failed', array('email' => $email, 'error' => $e->getMessage()));
-        }
-
-        $payload = array(
-            'Name' => $contact_data['name'] ?? $email,
-            'Email' => $email,
-            'IsCompany' => (bool) ($contact_data['is_company'] ?? false),
-            'CountryId' => $contact_data['country_id'] ?? 1,
-            'Phone' => $contact_data['phone'] ?? null,
-            'Note' => $contact_data['note'] ?? null,
-            'IdentificationNumber' => $contact_data['identification_number'] ?? null,
-            'VatNumber' => $contact_data['vat_number'] ?? null,
-        );
-
-        $payload = array_filter($payload, function ($value) {
-            return $value !== null && $value !== '';
-        });
-
-        $created = $this->create_resource('Contacts', $payload);
-
-        return $created;
+    public function create_invoice(array $context = array()) {
+        return $this->create_issued_invoice($context);
     }
 
     /**
-     * Record an email interaction for traceability.
+     * Alias preserved for diagnostic tooling. Returns the same structure as
+     * create_invoice().
      *
-     * @param array<string,mixed> $email_meta
-     * @param array<int,array<string,mixed>> $attachments
+     * @param array $context
+     * @return array
+     * @throws Exception
+     */
+    public function create_invoice_with_response(array $context = array()) {
+        return $this->create_issued_invoice($context);
+    }
+
+    /**
+     * Execute the full integration flow required by iDoklad:
+     * 1. Authenticate via OAuth 2.0 client credentials
+     * 2. Optionally create a partner/contact if PartnerId is not available
+     * 3. Resolve the numeric sequence for issued invoices and compute the next
+     *    document serial number
+     * 4. Create the issued invoice using the exact payload mandated by the
+     *    specification, dynamically injecting the numeric sequence ID and the
+     *    computed serial number.
+     *
+     * @param array $context Optional data used to resolve PartnerId or create a
+     *                       new partner.
+     * @return array Structured response containing the HTTP status code, raw
+     *               body, parsed data and message where available.
+     * @throws Exception When authentication or any API call fails.
+     */
+    public function create_issued_invoice(array $context = array()) {
+        $this->ensure_credentials();
+        $this->ensure_access_token();
+
+        $partner_id = $this->resolve_partner_id($context);
+        $sequence = $this->resolve_numeric_sequence();
+
+        $payload = $this->build_issued_invoice_payload(
+            $partner_id,
+            $sequence['NumericSequenceId'],
+            $sequence['DocumentSerialNumber']
+        );
+
+        $this->log('Creating issued invoice', array(
+            'partner_id' => $partner_id,
+            'numeric_sequence_id' => $sequence['NumericSequenceId'],
+            'document_serial_number' => $sequence['DocumentSerialNumber'],
+        ));
+
+        $response = $this->send_json_request('POST', $this->api_base_url . '/IssuedInvoices', $payload);
+        $decoded = $response['json'];
+
+        if ($response['status_code'] >= 400) {
+            $message = $this->extract_error_message($decoded, $response['body']);
+            $this->log('Issued invoice creation failed', array(
+                'status_code' => $response['status_code'],
+                'message' => $message,
+                'payload' => $payload,
+                'response' => $decoded,
+            ));
+
+            throw new Exception($message ?: 'Failed to create issued invoice', $response['status_code']);
+        }
+
+        $data = is_array($decoded) && isset($decoded['Data']) ? $decoded['Data'] : $decoded;
+        $message = is_array($decoded) && isset($decoded['Message']) ? $decoded['Message'] : null;
+
+        $result = array(
+            'StatusCode' => $response['status_code'],
+            'Data' => $data,
+            'RawResponse' => $decoded,
+        );
+
+        if ($message !== null) {
+            $result['Message'] = $message;
+        }
+
+        $this->log('Issued invoice created', array(
+            'status_code' => $response['status_code'],
+            'invoice_id' => $data['Id'] ?? null,
+            'document_number' => $data['DocumentNumber'] ?? null,
+        ));
+
+        return $result;
+    }
+
+    /**
+     * Simple diagnostic helper used in the admin UI to verify credentials.
+     *
+     * @return array{success:bool,message:string}
+     */
+    public function test_connection() {
+        try {
+            $this->ensure_credentials();
+            $this->fetch_access_token(true);
+
+            return array(
+                'success' => true,
+                'message' => 'OAuth connection successful. Access token obtained.',
+            );
+        } catch (Exception $exception) {
+            return array(
+                'success' => false,
+                'message' => $exception->getMessage(),
+            );
+        }
+    }
+
+    /**
+     * Legacy hook maintained for compatibility with the email monitor. The new
+     * integration no longer mirrors contact notes in iDoklad, so this method
+     * simply records structured information to the debug log when enabled.
+     *
+     * @param array $email_meta
+     * @param array $attachments
      * @param string $status
      * @return void
      */
     public function record_email_activity(array $email_meta, array $attachments = array(), $status = 'received') {
-        $email_address = $email_meta['from'] ?? ($email_meta['email_from'] ?? null);
-        if (empty($email_address)) {
+        $context = array(
+            'status' => $status,
+            'email' => $email_meta['from'] ?? ($email_meta['email_from'] ?? null),
+            'subject' => $email_meta['subject'] ?? null,
+            'message_id' => $email_meta['email_id'] ?? ($email_meta['id'] ?? null),
+            'attachments' => array_map(function ($attachment) {
+                return $attachment['name'] ?? ($attachment['filename'] ?? 'file');
+            }, $attachments),
+        );
+
+        $this->log('Email activity recorded locally', $context);
+    }
+
+    /**
+     * Ensure the class has credentials to operate with.
+     *
+     * @return void
+     * @throws Exception
+     */
+    private function ensure_credentials() {
+        if (empty($this->client_id) || empty($this->client_secret)) {
+            throw new Exception('iDoklad client credentials are missing.');
+        }
+    }
+
+    /**
+     * Reuse cached token where possible, otherwise obtain a new one.
+     *
+     * @return void
+     * @throws Exception
+     */
+    private function ensure_access_token() {
+        if ($this->access_token && $this->token_expires_at && time() < ($this->token_expires_at - 30)) {
             return;
         }
 
-        $note = $this->format_email_note($email_meta, $attachments, $status);
-
-        try {
-            $contact = $this->ensure_contact_for_email($email_address, array(
-                'name' => $email_meta['sender_name'] ?? ($email_meta['name'] ?? $email_address),
-                'note' => $email_meta['subject'] ?? '',
-            ));
-
-            $contact_id = is_array($contact) ? ($contact['Id'] ?? null) : null;
-
-            if ($contact_id) {
-                try {
-                    $this->make_api_request('/Contacts/' . $contact_id . '/Notes', 'POST', array('Note' => $note));
-                } catch (Exception $note_exception) {
-                    $this->log_debug('Unable to attach note to contact', array(
-                        'contact_id' => $contact_id,
-                        'error' => $note_exception->getMessage(),
-                    ));
-                }
-            }
-        } catch (Exception $e) {
-            $this->log_debug('Failed to record email activity in iDoklad', array(
-                'email' => $email_address,
-                'error' => $e->getMessage(),
-            ));
-        }
-
-        if (function_exists('do_action')) {
-            do_action('idoklad_email_activity_recorded', $email_meta, $attachments, $status);
-        }
+        $this->fetch_access_token(false);
     }
 
     /**
-     * Build a readable note body summarising the email interaction.
+     * Perform the OAuth 2.0 client credentials flow.
      *
-     * @param array<string,mixed> $email_meta
-     * @param array<int,array<string,mixed>> $attachments
-     * @param string $status
-     * @return string
+     * @param bool $force_refresh When true a new token is requested even if one
+     *                            is cached.
+     * @return void
+     * @throws Exception
      */
-    private function format_email_note(array $email_meta, array $attachments, $status) {
-        $lines = array();
-        $lines[] = 'Email status: ' . ucfirst($status);
-
-        if (!empty($email_meta['subject'])) {
-            $lines[] = 'Subject: ' . $email_meta['subject'];
+    private function fetch_access_token($force_refresh = false) {
+        if (!$force_refresh && $this->access_token && $this->token_expires_at && time() < ($this->token_expires_at - 30)) {
+            return;
         }
 
-        if (!empty($email_meta['email_id'])) {
-            $lines[] = 'Message ID: ' . $email_meta['email_id'];
+        $body = http_build_query(array(
+            'grant_type' => 'client_credentials',
+            'client_id' => $this->client_id,
+            'client_secret' => $this->client_secret,
+            'scope' => 'idoklad_api',
+        ));
+
+        $headers = array(
+            'Content-Type' => 'application/x-www-form-urlencoded',
+            'Accept' => 'application/json',
+        );
+
+        $response = $this->http_request('POST', $this->identity_url, $headers, $body);
+        $decoded = json_decode($response['body'], true);
+
+        if ($decoded === null) {
+            throw new Exception('Unable to decode authentication response from iDoklad.');
         }
 
-        if (!empty($email_meta['received_at'])) {
-            $lines[] = 'Received at: ' . $email_meta['received_at'];
+        if ($response['status_code'] >= 400) {
+            $message = $this->extract_error_message($decoded, $response['body']);
+            throw new Exception($message ?: 'Failed to authenticate with iDoklad.', $response['status_code']);
         }
 
-        if (!empty($attachments)) {
-            $lines[] = 'Attachments:';
-            foreach ($attachments as $attachment) {
-                $label = $attachment['name'] ?? ($attachment['filename'] ?? 'file');
-                $size = isset($attachment['size']) ? $this->human_readable_file_size($attachment['size']) : null;
-                $lines[] = ' - ' . $label . ($size ? ' (' . $size . ')' : '');
-            }
+        if (empty($decoded['access_token'])) {
+            throw new Exception('Authentication response did not contain an access token.');
         }
 
-        if (!empty($email_meta['document_number'])) {
-            $lines[] = 'Document number: ' . $email_meta['document_number'];
-        }
-
-        if (!empty($email_meta['notes'])) {
-            $lines[] = 'Notes: ' . $email_meta['notes'];
-        }
-
-        return implode("\n", $lines);
+        $this->access_token = $decoded['access_token'];
+        $expires_in = isset($decoded['expires_in']) ? (int) $decoded['expires_in'] : 3600;
+        $this->token_expires_at = time() + max(30, $expires_in);
     }
 
     /**
-     * Convert file size to a readable format.
+     * Decide which PartnerId to use for the invoice. If none is supplied, create
+     * a new partner from the provided context. When insufficient data is
+     * available, fall back to the sample PartnerId specified in the payload.
      *
-     * @param int $bytes
-     * @return string
+     * @param array $context
+     * @return int
      */
-    private function human_readable_file_size($bytes) {
-        $bytes = (int) $bytes;
-        if ($bytes <= 0) {
-            return '0 B';
-        }
+    private function resolve_partner_id(array $context) {
+        $candidate = null;
 
-        $units = array('B', 'KB', 'MB', 'GB');
-        $power = (int) floor(log($bytes, 1024));
-        $power = min($power, count($units) - 1);
-
-        $value = $bytes / pow(1024, $power);
-
-        return round($value, 2) . ' ' . $units[$power];
-    }
-    
-    /**
-     * Create invoice with response capture (for testing/diagnostics)
-     * Note: This accepts already-transformed data from the DataTransformer
-     */
-    public function create_invoice_with_response($idoklad_payload) {
-        error_log('iDoklad API: Creating received invoice with payload (test mode): ' . json_encode($idoklad_payload, JSON_PRETTY_PRINT));
-        
-        try {
-            // The payload is already in iDoklad format from the DataTransformer
-            // Create received invoice with response capture
-            $response = $this->make_api_request('/ReceivedInvoices', 'POST', $idoklad_payload, true);
-            
-            error_log('iDoklad API: Received invoice created successfully with ID: ' . (isset($response['Id']) ? $response['Id'] : 'unknown'));
-            
-            return $response;
-            
-        } catch (Exception $e) {
-            error_log('iDoklad API Error: ' . $e->getMessage());
-            throw $e;
-        }
-    }
-    
-    /**
-     * Create invoice from transformed iDoklad payload
-     * Note: This accepts already-transformed data from the DataTransformer
-     */
-    public function create_invoice($idoklad_payload) {
-        error_log('iDoklad API: Creating received invoice with payload: ' . json_encode($idoklad_payload, JSON_PRETTY_PRINT));
-        
-        try {
-            // The payload is already in iDoklad format from the DataTransformer
-            // Just send it to the API
-            $response = $this->make_api_request('/ReceivedInvoices', 'POST', $idoklad_payload);
-            
-            error_log('iDoklad API: Received invoice created successfully with ID: ' . (isset($response['Id']) ? $response['Id'] : 'unknown'));
-            
-            return $response;
-            
-        } catch (Exception $e) {
-            error_log('iDoklad API Error: ' . $e->getMessage());
-            throw $e;
-        }
-    }
-    
-    /**
-     * Create ISSUED invoice (for invoices you send to customers)
-     */
-    public function create_issued_invoice($extracted_data) {
-        if (get_option('idoklad_debug_mode')) {
-            error_log('iDoklad API: Creating issued invoice with data: ' . json_encode($extracted_data));
-        }
-        
-        try {
-            $customer_id = $this->get_or_create_supplier($extracted_data);
-            $invoice_data = $this->build_invoice_data($extracted_data, $customer_id);
-            
-            if (get_option('idoklad_debug_mode')) {
-                error_log('iDoklad API: Sending payload: ' . json_encode($invoice_data, JSON_PRETTY_PRINT));
-            }
-            
-            $response = $this->make_api_request('/IssuedInvoices', 'POST', $invoice_data);
-            
-            if (get_option('idoklad_debug_mode')) {
-                error_log('iDoklad API: Issued invoice created successfully with ID: ' . (isset($response['Id']) ? $response['Id'] : 'unknown'));
-            }
-            
-            return $response;
-            
-        } catch (Exception $e) {
-            error_log('iDoklad API Error: ' . $e->getMessage());
-            throw $e;
-        }
-    }
-    
-    /**
-     * Create expense from extracted data
-     */
-    public function create_expense($extracted_data) {
-        if (get_option('idoklad_debug_mode')) {
-            error_log('iDoklad API: Creating expense with data: ' . json_encode($extracted_data));
-        }
-        
-        try {
-            // First, get or create supplier
-            $supplier_id = $this->get_or_create_supplier($extracted_data);
-            
-            // Build expense data
-            $expense_data = $this->build_expense_data($extracted_data, $supplier_id);
-            
-            // Create expense
-            $response = $this->make_api_request('/Expenses', 'POST', $expense_data);
-            
-            if (get_option('idoklad_debug_mode')) {
-                error_log('iDoklad API: Expense created successfully with ID: ' . (isset($response['Id']) ? $response['Id'] : 'unknown'));
-            }
-            
-            return $response;
-            
-        } catch (Exception $e) {
-            error_log('iDoklad API Error: ' . $e->getMessage());
-            throw $e;
-        }
-    }
-    
-    /**
-     * Get or create supplier contact in iDoklad.
-     *
-     * Exposed publicly so other components (like the email monitor) can ensure
-     * that a valid PartnerId exists before attempting to create a received
-     * invoice. The API rejects payloads where PartnerId is 0 or missing, so we
-     * always create or look up the supplier first.
-     */
-    public function get_or_create_supplier($extracted_data) {
-        $supplier_name = $extracted_data['supplier_name'];
-        
-        if (empty($supplier_name)) {
-            throw new Exception('Supplier name is required');
-        }
-        
-        // Try to find existing supplier
-        try {
-            $suppliers = $this->list_resource('Contacts', array(
-                'filter_raw' => 'Name~eq~' . rawurlencode($supplier_name),
-                'pageSize' => 1,
-            ));
-
-            if (!empty($suppliers['Data']) && count($suppliers['Data']) > 0) {
-                $supplier = $suppliers['Data'][0];
-                return $supplier['Id'];
-            }
-        } catch (Exception $e) {
-            if (function_exists('get_option') && get_option('idoklad_debug_mode')) {
-                error_log('iDoklad API: Could not search for existing supplier: ' . $e->getMessage());
+        foreach (array('PartnerId', 'partner_id', 'partnerId') as $key) {
+            if (isset($context[$key]) && $context[$key]) {
+                $candidate = (int) $context[$key];
+                break;
             }
         }
 
-        // Create new supplier
-        $supplier_data = array(
-            'Name' => $supplier_name,
-            'IsCompany' => true,
-            'CountryId' => 1, // Czech Republic - configurable via transformer if needed
-            'IsActive' => true
-        );
-
-        // Add VAT number if available
-        if (!empty($extracted_data['supplier_vat_number'])) {
-            $supplier_data['IdentificationNumber'] = $extracted_data['supplier_vat_number'];
+        if ($candidate) {
+            return $candidate;
         }
 
-        if (!empty($extracted_data['supplier_email'])) {
-            $supplier_data['Email'] = $extracted_data['supplier_email'];
-        }
+        $partner_payload = $this->extract_partner_payload($context);
 
-        $supplier_response = $this->create_resource('Contacts', $supplier_data);
-
-        return $supplier_response['Id'];
-    }
-    
-    /**
-     * Build RECEIVED invoice data for API (invoices you receive from suppliers)
-     */
-    private function build_received_invoice_data($extracted_data, $supplier_id) {
-        // Ensure date is in correct format (Y-m-d)
-        $date = date('Y-m-d', strtotime($extracted_data['date']));
-        $due_date = !empty($extracted_data['due_date']) ? date('Y-m-d', strtotime($extracted_data['due_date'])) : $date;
-        
-        $invoice_data = array(
-            'PartnerId' => $supplier_id,
-            'DocumentNumber' => $extracted_data['invoice_number'] ?? 'INV-' . time(),
-            'DateOfIssue' => $date,
-            'DateOfTaxing' => $date,
-            'DateOfMaturity' => $due_date,
-            'DateOfPayment' => null, // Not paid yet
-            'CurrencyId' => $this->get_currency_id($extracted_data['currency'] ?? 'CZK'),
-            'ExchangeRate' => 1,
-            'ExchangeRateAmount' => 1,
-            'PaymentStatus' => 0, // Unpaid
-            'Items' => array()
-        );
-        
-        // Add items
-        if (!empty($extracted_data['items']) && is_array($extracted_data['items'])) {
-            foreach ($extracted_data['items'] as $item) {
-                $invoice_item = array(
-                    'Name' => $item['name'] ?? 'Item',
-                    'Amount' => floatval($item['quantity'] ?? 1),
-                    'UnitPrice' => floatval($item['price'] ?? 0),
-                    'VatRateType' => 1, // Standard VAT rate (21% in CZ)
-                    'PriceType' => 0 // 0 = Without VAT, 1 = With VAT
-                );
-                
-                $invoice_data['Items'][] = $invoice_item;
-            }
-        } else {
-            // If no items, create a single item with the total amount
-            $invoice_data['Items'][] = array(
-                'Name' => 'Invoice total',
-                'Amount' => 1,
-                'UnitPrice' => floatval($extracted_data['total_amount'] ?? 0),
-                'VatRateType' => 1,
-                'PriceType' => 0 // Assuming price is without VAT
-            );
-        }
-        
-        // Add notes if available
-        if (!empty($extracted_data['notes'])) {
-            $invoice_data['Note'] = $extracted_data['notes'];
-        }
-        
-        return $invoice_data;
-    }
-    
-    /**
-     * Build ISSUED invoice data for API (invoices you send to customers)
-     */
-    private function build_invoice_data($extracted_data, $customer_id) {
-        $date = date('Y-m-d', strtotime($extracted_data['date']));
-        $due_date = !empty($extracted_data['due_date']) ? date('Y-m-d', strtotime($extracted_data['due_date'])) : $date;
-        
-        $invoice_data = array(
-            'PartnerId' => $customer_id,
-            'DocumentNumber' => $extracted_data['invoice_number'] ?? 'INV-' . time(),
-            'DateOfIssue' => $date,
-            'DateOfTaxing' => $date,
-            'DateOfMaturity' => $due_date,
-            'CurrencyId' => $this->get_currency_id($extracted_data['currency'] ?? 'CZK'),
-            'ExchangeRate' => 1,
-            'ExchangeRateAmount' => 1,
-            'IsEet' => false,
-            'Items' => array()
-        );
-        
-        // Add items
-        if (!empty($extracted_data['items']) && is_array($extracted_data['items'])) {
-            foreach ($extracted_data['items'] as $item) {
-                $invoice_item = array(
-                    'Name' => $item['name'] ?? 'Item',
-                    'Amount' => floatval($item['quantity'] ?? 1),
-                    'UnitPrice' => floatval($item['price'] ?? 0),
-                    'VatRateType' => 1,
-                    'PriceType' => 0
-                );
-                
-                $invoice_data['Items'][] = $invoice_item;
-            }
-        } else {
-            $invoice_data['Items'][] = array(
-                'Name' => 'Invoice total',
-                'Amount' => 1,
-                'UnitPrice' => floatval($extracted_data['total_amount'] ?? 0),
-                'VatRateType' => 1,
-                'PriceType' => 0
-            );
-        }
-        
-        if (!empty($extracted_data['notes'])) {
-            $invoice_data['Note'] = $extracted_data['notes'];
-        }
-        
-        return $invoice_data;
-    }
-    
-    /**
-     * Build expense data for API
-     */
-    private function build_expense_data($extracted_data, $supplier_id) {
-        $expense_data = array(
-            'PartnerId' => $supplier_id,
-            'DocumentNumber' => $extracted_data['invoice_number'],
-            'DateOfIssue' => $extracted_data['date'],
-            'DateOfTaxing' => $extracted_data['date'],
-            'CurrencyId' => $this->get_currency_id($extracted_data['currency']),
-            'ExchangeRate' => 1,
-            'ExchangeRateAmount' => 1,
-            'IsEet' => false,
-            'Items' => array()
-        );
-        
-        // Add items
-        if (!empty($extracted_data['items']) && is_array($extracted_data['items'])) {
-            foreach ($extracted_data['items'] as $item) {
-                $expense_item = array(
-                    'Name' => $item['name'],
-                    'Amount' => $item['quantity'],
-                    'UnitPrice' => $item['price'],
-                    'VatRateType' => 1, // Standard VAT rate
-                    'IsTaxMovement' => true
-                );
-                
-                $expense_data['Items'][] = $expense_item;
-            }
-        } else {
-            // If no items, create a single item with the total amount
-            $expense_data['Items'][] = array(
-                'Name' => 'Expense total',
-                'Amount' => 1,
-                'UnitPrice' => $extracted_data['total_amount'],
-                'VatRateType' => 1,
-                'IsTaxMovement' => true
-            );
-        }
-        
-        // Add notes if available
-        if (!empty($extracted_data['notes'])) {
-            $expense_data['Note'] = $extracted_data['notes'];
-        }
-        
-        return $expense_data;
-    }
-    
-    /**
-     * Get currency ID from currency code
-     */
-    private function get_currency_id($currency_code) {
-        // Default currency mapping - you might want to make this configurable
-        $currency_mapping = array(
-            'CZK' => 1,
-            'EUR' => 2,
-            'USD' => 3,
-            'GBP' => 4
-        );
-        
-        $currency_code = strtoupper($currency_code);
-        
-        return isset($currency_mapping[$currency_code]) ? $currency_mapping[$currency_code] : 1; // Default to CZK
-    }
-    
-    /**
-     * Test API connection using OAuth
-     */
-    public function test_connection() {
-        try {
-            // First, get the OAuth access token
-            $access_token = $this->get_access_token();
-            
-            if (empty($access_token)) {
-                throw new Exception('Failed to obtain access token');
-            }
-            
-            // Test the connection by making a simple API call
-            // Try to get user info or company info
+        if (!empty($partner_payload)) {
             try {
-                $user_info = $this->make_api_request('/Users/Current');
-                return array(
-                    'success' => true, 
-                    'message' => 'OAuth connection successful. User: ' . (isset($user_info['UserName']) ? $user_info['UserName'] : 'Unknown')
-                );
-            } catch (Exception $e) {
-                // If user info fails, try a different endpoint
-                try {
-                    $company_info = $this->make_api_request('/Companies/Current');
-                    return array(
-                        'success' => true, 
-                        'message' => 'OAuth connection successful. Company: ' . (isset($company_info['Name']) ? $company_info['Name'] : 'Unknown')
-                    );
-                } catch (Exception $e2) {
-                    // If both fail, but we got the token, that's still a success
-                    return array(
-                        'success' => true, 
-                        'message' => 'OAuth token obtained successfully, but API endpoints may require additional permissions'
-                    );
+                return $this->create_partner($partner_payload);
+            } catch (Exception $exception) {
+                $this->log('Partner creation failed, falling back to default PartnerId', array(
+                    'error' => $exception->getMessage(),
+                ));
+            }
+        }
+
+        return 22429105;
+    }
+
+    /**
+     * Build partner payload if sufficient context is available.
+     *
+     * @param array $context
+     * @return array<string,mixed>
+     */
+    private function extract_partner_payload(array $context) {
+        $source = array();
+        if (isset($context['Partner']) && is_array($context['Partner'])) {
+            $source = $context['Partner'];
+        }
+
+        $company_name = trim($source['CompanyName'] ?? ($context['PartnerName'] ?? ($context['supplier_name'] ?? '')));
+        $email = trim($source['Email'] ?? ($context['PartnerEmail'] ?? ($context['email'] ?? '')));
+        $street = trim($source['Street'] ?? ($context['Street'] ?? ''));
+        $city = trim($source['City'] ?? ($context['City'] ?? ''));
+        $postal_code = trim($source['PostalCode'] ?? ($context['PostalCode'] ?? ''));
+        $country_id = isset($source['CountryId']) ? (int) $source['CountryId'] : (isset($context['CountryId']) ? (int) $context['CountryId'] : 1);
+
+        if ($company_name === '') {
+            return array();
+        }
+
+        $payload = array(
+            'CompanyName' => $company_name,
+            'CountryId' => $country_id ?: 1,
+        );
+
+        if ($email !== '') {
+            $payload['Email'] = $email;
+        }
+
+        if ($street !== '') {
+            $payload['Street'] = $street;
+        }
+
+        if ($city !== '') {
+            $payload['City'] = $city;
+        }
+
+        if ($postal_code !== '') {
+            $payload['PostalCode'] = $postal_code;
+        }
+
+        return $payload;
+    }
+
+    /**
+     * Create a partner/contact using the API and return its identifier.
+     *
+     * @param array<string,mixed> $payload
+     * @return int
+     * @throws Exception
+     */
+    private function create_partner(array $payload) {
+        $this->ensure_access_token();
+
+        $response = $this->send_json_request('POST', $this->api_base_url . '/Contacts', $payload);
+        $decoded = $response['json'];
+
+        if ($response['status_code'] >= 400) {
+            $message = $this->extract_error_message($decoded, $response['body']);
+            throw new Exception($message ?: 'Failed to create partner in iDoklad.', $response['status_code']);
+        }
+
+        $data = is_array($decoded) && isset($decoded['Data']) ? $decoded['Data'] : $decoded;
+
+        if (!isset($data['Id'])) {
+            throw new Exception('Contact creation response did not include an Id.');
+        }
+
+        $this->log('Partner created', array('partner_id' => $data['Id']));
+
+        return (int) $data['Id'];
+    }
+
+    /**
+     * Retrieve the numeric sequence for issued invoices and determine the next
+     * serial number.
+     *
+     * @return array{NumericSequenceId:int,DocumentSerialNumber:int}
+     * @throws Exception
+     */
+    private function resolve_numeric_sequence() {
+        $this->ensure_access_token();
+
+        $response = $this->send_json_request('GET', $this->api_base_url . '/NumericSequences');
+        $decoded = $response['json'];
+
+        if ($response['status_code'] >= 400) {
+            $message = $this->extract_error_message($decoded, $response['body']);
+            throw new Exception($message ?: 'Failed to resolve numeric sequences.', $response['status_code']);
+        }
+
+        $sequences = array();
+        if (isset($decoded['Data']) && is_array($decoded['Data'])) {
+            $sequences = $decoded['Data'];
+        } elseif (is_array($decoded)) {
+            $sequences = $decoded;
+        }
+
+        foreach ($sequences as $sequence) {
+            if (isset($sequence['DocumentType']) && (int) $sequence['DocumentType'] === 0) {
+                $numeric_sequence_id = (int) ($sequence['Id'] ?? 0);
+                $last_number = isset($sequence['LastNumber']) ? (int) $sequence['LastNumber'] : 0;
+
+                if ($numeric_sequence_id <= 0) {
+                    break;
                 }
+
+                return array(
+                    'NumericSequenceId' => $numeric_sequence_id,
+                    'DocumentSerialNumber' => $last_number + 1,
+                );
             }
-            
-        } catch (Exception $e) {
-            if (get_option('idoklad_debug_mode')) {
-                error_log('iDoklad API: Connection test failed: ' . $e->getMessage());
-            }
-            return array('success' => false, 'message' => $e->getMessage());
         }
+
+        throw new Exception('Issued invoice numeric sequence could not be resolved.');
     }
-    
+
     /**
-     * Get API status and limits
+     * Build the issued invoice payload defined by the specification while
+     * injecting dynamic numbering details.
+     *
+     * @param int $partner_id
+     * @param int $numeric_sequence_id
+     * @param int $document_serial_number
+     * @return array<string,mixed>
      */
-    public function get_api_status() {
-        try {
-            $response = $this->make_api_request('/Account/GetCurrentUser');
-            return array(
-                'connected' => true,
-                'user' => $response
+    private function build_issued_invoice_payload($partner_id, $numeric_sequence_id, $document_serial_number) {
+        return array(
+            'PartnerId' => $partner_id,
+            'Description' => 'Consulting and license services (API integration test)',
+            'Note' => 'Automatic test invoice created through API integration',
+            'OrderNumber' => 'PO-20251023-01',
+            'VariableSymbol' => '20250001',
+            'DateOfIssue' => '2025-10-23',
+            'DateOfTaxing' => '2025-10-23',
+            'DateOfMaturity' => '2025-11-06',
+            'DateOfAccountingEvent' => '2025-10-23',
+            'DateOfVatApplication' => '2025-10-23',
+            'CurrencyId' => 1,
+            'ExchangeRate' => 1.0,
+            'ExchangeRateAmount' => 1.0,
+            'PaymentOptionId' => 1,
+            'ConstantSymbolId' => 7,
+            'NumericSequenceId' => $numeric_sequence_id,
+            'DocumentSerialNumber' => $document_serial_number,
+            'IsEet' => false,
+            'EetResponsibility' => 0,
+            'IsIncomeTax' => true,
+            'VatOnPayStatus' => 0,
+            'VatRegime' => 0,
+            'HasVatRegimeOss' => false,
+            'ItemsTextPrefix' => 'Invoice items:',
+            'ItemsTextSuffix' => 'Thank you for your cooperation.',
+            'Items' => array(
+                array(
+                    'Name' => 'Consulting service',
+                    'Description' => 'Consulting work for October',
+                    'Code' => 'CONSULT001',
+                    'ItemType' => 0,
+                    'Unit' => 'hour',
+                    'Amount' => 2.0,
+                    'UnitPrice' => 1500.0,
+                    'PriceType' => 1,
+                    'VatRateType' => 2,
+                    'VatRate' => 0.0,
+                    'IsTaxMovement' => false,
+                    'DiscountPercentage' => 0.0,
+                ),
+                array(
+                    'Name' => 'Software license fee',
+                    'Description' => 'Monthly license',
+                    'Code' => 'LIC001',
+                    'ItemType' => 0,
+                    'Unit' => 'pcs',
+                    'Amount' => 1.0,
+                    'UnitPrice' => 499.0,
+                    'PriceType' => 1,
+                    'VatRateType' => 2,
+                    'VatRate' => 0.0,
+                    'IsTaxMovement' => false,
+                    'DiscountPercentage' => 0.0,
+                ),
+            ),
+            'ReportLanguage' => 1,
+        );
+    }
+
+    /**
+     * Perform an HTTP request and return the raw response.
+     *
+     * @param string $method
+     * @param string $url
+     * @param array<string,string> $headers
+     * @param string|null $body
+     * @return array{status_code:int,body:string,headers:array}
+     * @throws Exception
+     */
+    private function http_request($method, $url, array $headers = array(), $body = null) {
+        $method = strtoupper($method);
+
+        if (function_exists('wp_remote_request')) {
+            $args = array(
+                'method' => $method,
+                'timeout' => $this->http_timeout,
+                'headers' => $headers,
+                'body' => $body,
             );
-        } catch (Exception $e) {
+
+            $response = wp_remote_request($url, $args);
+
+            if (is_wp_error($response)) {
+                throw new Exception('HTTP request to iDoklad failed: ' . $response->get_error_message());
+            }
+
+            $status_code = (int) wp_remote_retrieve_response_code($response);
+            $response_body = (string) wp_remote_retrieve_body($response);
+            $response_headers = wp_remote_retrieve_headers($response);
+            $response_headers = is_array($response_headers) ? $response_headers : (array) $response_headers;
+
             return array(
-                'connected' => false,
-                'error' => $e->getMessage()
+                'status_code' => $status_code,
+                'body' => $response_body,
+                'headers' => $response_headers,
             );
         }
-    }
-    
-    /**
-     * Get available currencies
-     */
-    public function get_currencies() {
-        try {
-            $response = $this->make_api_request('/Currencies');
-            return $response;
-        } catch (Exception $e) {
-            if (get_option('idoklad_debug_mode')) {
-                error_log('iDoklad API: Could not fetch currencies: ' . $e->getMessage());
-            }
-            return array();
+
+        if (!function_exists('curl_init')) {
+            throw new Exception('Neither WordPress HTTP API nor cURL is available.');
         }
-    }
-    
-    /**
-     * Get VAT rates
-     */
-    public function get_vat_rates() {
-        try {
-            $response = $this->make_api_request('/VatRates');
-            return $response;
-        } catch (Exception $e) {
-            if (get_option('idoklad_debug_mode')) {
-                error_log('iDoklad API: Could not fetch VAT rates: ' . $e->getMessage());
-            }
-            return array();
+
+        $handle = curl_init($url);
+        curl_setopt($handle, CURLOPT_CUSTOMREQUEST, $method);
+        curl_setopt($handle, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($handle, CURLOPT_TIMEOUT, $this->http_timeout);
+
+        if ($body !== null) {
+            curl_setopt($handle, CURLOPT_POSTFIELDS, $body);
         }
+
+        $formatted_headers = array();
+        foreach ($headers as $header => $value) {
+            $formatted_headers[] = $header . ': ' . $value;
+        }
+
+        if (!empty($formatted_headers)) {
+            curl_setopt($handle, CURLOPT_HTTPHEADER, $formatted_headers);
+        }
+
+        $response_body = curl_exec($handle);
+
+        if ($response_body === false) {
+            $error_message = curl_error($handle);
+            curl_close($handle);
+            throw new Exception('cURL error while calling iDoklad: ' . $error_message);
+        }
+
+        $status_code = (int) curl_getinfo($handle, CURLINFO_HTTP_CODE);
+        curl_close($handle);
+
+        return array(
+            'status_code' => $status_code,
+            'body' => (string) $response_body,
+            'headers' => array(),
+        );
+    }
+
+    /**
+     * Send a JSON request with the current access token attached.
+     *
+     * @param string $method
+     * @param string $url
+     * @param array|null $payload
+     * @return array{status_code:int,body:string,headers:array,json:array}
+     * @throws Exception
+     */
+    private function send_json_request($method, $url, ?array $payload = null) {
+        $headers = array(
+            'Accept' => 'application/json',
+        );
+
+        if ($payload !== null) {
+            $headers['Content-Type'] = 'application/json';
+            $body = $this->encode_json($payload);
+        } else {
+            $body = null;
+        }
+
+        if ($this->access_token) {
+            $headers['Authorization'] = 'Bearer ' . $this->access_token;
+        }
+
+        $response = $this->http_request($method, $url, $headers, $body);
+        $decoded = array();
+
+        if ($response['body'] !== '') {
+            $decoded = json_decode($response['body'], true);
+
+            if ($decoded === null && json_last_error() !== JSON_ERROR_NONE) {
+                throw new Exception('Failed to decode JSON response from iDoklad: ' . json_last_error_msg());
+            }
+        }
+
+        $response['json'] = $decoded;
+
+        return $response;
+    }
+
+    /**
+     * Encode payload as JSON while preserving floats.
+     *
+     * @param array $payload
+     * @return string
+     * @throws Exception
+     */
+    private function encode_json(array $payload) {
+        if (function_exists('wp_json_encode')) {
+            $encoded = wp_json_encode($payload, JSON_UNESCAPED_UNICODE);
+        } else {
+            $encoded = json_encode($payload, JSON_UNESCAPED_UNICODE);
+        }
+
+        if ($encoded === false) {
+            throw new Exception('Failed to encode JSON payload: ' . json_last_error_msg());
+        }
+
+        return $encoded;
+    }
+
+    /**
+     * Extract a human-friendly error message from an API response.
+     *
+     * @param array|null $decoded
+     * @param string $raw_body
+     * @return string|null
+     */
+    private function extract_error_message($decoded, $raw_body) {
+        if (is_array($decoded)) {
+            if (!empty($decoded['Message']) && is_string($decoded['Message'])) {
+                return $decoded['Message'];
+            }
+
+            if (!empty($decoded['error_description']) && is_string($decoded['error_description'])) {
+                return $decoded['error_description'];
+            }
+
+            if (!empty($decoded['error']) && is_string($decoded['error'])) {
+                return $decoded['error'];
+            }
+        }
+
+        return $raw_body ?: null;
+    }
+
+    /**
+     * Centralised logging helper.
+     *
+     * @param string $message
+     * @param array $context
+     * @return void
+     */
+    private function log($message, array $context = array()) {
+        $should_log = true;
+
+        if (function_exists('get_option')) {
+            $should_log = (bool) get_option('idoklad_debug_mode');
+        }
+
+        if (!$should_log) {
+            return;
+        }
+
+        $output = 'iDoklad API: ' . $message;
+
+        if (!empty($context)) {
+            $encoded = function_exists('wp_json_encode') ? wp_json_encode($context, JSON_UNESCAPED_UNICODE) : json_encode($context, JSON_UNESCAPED_UNICODE);
+            if ($encoded !== false) {
+                $output .= ' ' . $encoded;
+            }
+        }
+
+        error_log($output);
     }
 }
