@@ -39,10 +39,10 @@ jQuery(document).ready(function($) {
     $('#test-chatgpt-connection').on('click', function() {
         var button = $(this);
         var resultSpan = $('#chatgpt-test-result');
-        
+
         button.prop('disabled', true);
         resultSpan.html('<span class="idoklad-loading"></span> Testing...');
-        
+
         $.ajax({
             url: idoklad_ajax.ajax_url,
             type: 'POST',
@@ -62,6 +62,66 @@ jQuery(document).ready(function($) {
             },
             complete: function() {
                 button.prop('disabled', false);
+            }
+        });
+    });
+
+    // Refresh ChatGPT models
+    $('#refresh-chatgpt-models').on('click', function() {
+        var button = $(this);
+        var select = $('#chatgpt_model');
+        var originalText = button.text();
+        var loadingText = button.data('loading-text') || 'Refreshing...';
+        var currentSelection = select.val();
+
+        button.prop('disabled', true).text(loadingText);
+
+        $.ajax({
+            url: idoklad_ajax.ajax_url,
+            type: 'POST',
+            data: {
+                action: 'idoklad_get_chatgpt_models',
+                nonce: idoklad_ajax.nonce
+            },
+            success: function(response) {
+                if (response.success && response.data) {
+                    var models = response.data;
+                    var hasCurrent = false;
+                    var optionsHtml = '';
+
+                    $.each(models, function(key, label) {
+                        var value = escapeHtml(key);
+                        var text = escapeHtml(label || key);
+                        if (key === currentSelection) {
+                            hasCurrent = true;
+                        }
+                        optionsHtml += '<option value="' + value + '">' + text + '</option>';
+                    });
+
+                    select.empty().append(optionsHtml);
+
+                    if (!hasCurrent && currentSelection) {
+                        select.append('<option value="' + escapeHtml(currentSelection) + '">' + escapeHtml(currentSelection) + ' (' + escapeHtml('custom') + ')</option>');
+                    }
+
+                    if (currentSelection) {
+                        select.val(currentSelection);
+                    }
+
+                    alert('Available models refreshed.');
+                } else {
+                    var errorMsg = 'Unable to fetch models.';
+                    if (typeof response.data === 'string') {
+                        errorMsg = response.data;
+                    }
+                    alert('Error: ' + errorMsg);
+                }
+            },
+            error: function() {
+                alert('Error: Failed to fetch models from OpenAI.');
+            },
+            complete: function() {
+                button.prop('disabled', false).text(originalText);
             }
         });
     });

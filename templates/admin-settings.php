@@ -95,7 +95,141 @@ if (!defined('ABSPATH')) {
                         </tr>
                     </table>
                 </div>
-                
+
+                <!-- ChatGPT AI Extraction Settings -->
+                <div class="idoklad-settings-section">
+                    <h2>🤖 <?php _e('AI Invoice Extraction (ChatGPT)', 'idoklad-invoice-processor'); ?></h2>
+                    <p class="description"><?php _e('Configure the OpenAI ChatGPT API that is used to extract structured data from PDF text when PDF.co AI parsing is unavailable.', 'idoklad-invoice-processor'); ?></p>
+
+                    <?php
+                    $chatgpt_models = array(
+                        'gpt-4o' => __('GPT-4o (Recommended)', 'idoklad-invoice-processor'),
+                        'gpt-4o-mini' => __('GPT-4o Mini', 'idoklad-invoice-processor'),
+                        'gpt-4-turbo' => __('GPT-4 Turbo', 'idoklad-invoice-processor'),
+                        'gpt-4' => __('GPT-4', 'idoklad-invoice-processor'),
+                        'gpt-3.5-turbo' => __('GPT-3.5 Turbo', 'idoklad-invoice-processor'),
+                    );
+                    $selected_model = get_option('idoklad_chatgpt_model', 'gpt-4o');
+                    ?>
+
+                    <table class="form-table">
+                        <tr>
+                            <th scope="row">
+                                <label for="chatgpt_api_key"><?php _e('OpenAI API Key', 'idoklad-invoice-processor'); ?> *</label>
+                            </th>
+                            <td>
+                                <input type="password"
+                                       id="chatgpt_api_key"
+                                       name="chatgpt_api_key"
+                                       value="<?php echo esc_attr(get_option('idoklad_chatgpt_api_key')); ?>"
+                                       class="regular-text"
+                                       autocomplete="off"
+                                       placeholder="sk-..." />
+                                <p class="description"><?php _e('Store securely. The key is used to generate invoice data when PDF.co parsing is unavailable.', 'idoklad-invoice-processor'); ?></p>
+                                <p>
+                                    <button type="button" id="test-chatgpt-connection" class="button button-secondary">
+                                        <?php _e('Test ChatGPT Connection', 'idoklad-invoice-processor'); ?>
+                                    </button>
+                                    <span id="chatgpt-test-result"></span>
+                                </p>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th scope="row">
+                                <label for="chatgpt_model"><?php _e('Preferred Model', 'idoklad-invoice-processor'); ?></label>
+                            </th>
+                            <td>
+                                <select id="chatgpt_model" name="chatgpt_model" style="max-width: 320px;">
+                                    <?php foreach ($chatgpt_models as $model_key => $model_label): ?>
+                                        <option value="<?php echo esc_attr($model_key); ?>" <?php selected($selected_model, $model_key); ?>>
+                                            <?php echo esc_html($model_label); ?>
+                                        </option>
+                                    <?php endforeach; ?>
+                                    <?php if (!isset($chatgpt_models[$selected_model])): ?>
+                                        <option value="<?php echo esc_attr($selected_model); ?>" selected>
+                                            <?php printf(esc_html__('%s (custom)', 'idoklad-invoice-processor'), esc_html($selected_model)); ?>
+                                        </option>
+                                    <?php endif; ?>
+                                </select>
+                                <p class="description"><?php _e('Click refresh to load models that are currently available for your API key.', 'idoklad-invoice-processor'); ?></p>
+                                <p>
+                                    <button type="button" id="refresh-chatgpt-models" class="button button-secondary" data-loading-text="<?php esc_attr_e('Refreshing...', 'idoklad-invoice-processor'); ?>">
+                                        <?php _e('Refresh Available Models', 'idoklad-invoice-processor'); ?>
+                                    </button>
+                                </p>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th scope="row">
+                                <label for="chatgpt_prompt"><?php _e('Extraction Prompt', 'idoklad-invoice-processor'); ?></label>
+                            </th>
+                            <td>
+                                <textarea id="chatgpt_prompt"
+                                          name="chatgpt_prompt"
+                                          rows="4"
+                                          style="width:100%; max-width:600px; font-family: monospace;"><?php echo esc_textarea(get_option('idoklad_chatgpt_prompt')); ?></textarea>
+                                <p class="description"><?php _e('Customise how invoice data is extracted from PDF text. Keep JSON keys consistent with the rest of the system.', 'idoklad-invoice-processor'); ?></p>
+                            </td>
+                        </tr>
+                    </table>
+                </div>
+
+                <!-- Cloud OCR Settings -->
+                <div class="idoklad-settings-section">
+                    <h2>🔍 <?php _e('OCR Services (Fallback)', 'idoklad-invoice-processor'); ?></h2>
+                    <p class="description"><?php _e('Configure OCR providers that can be used when PDF.co is disabled or runs out of credits.', 'idoklad-invoice-processor'); ?></p>
+
+                    <table class="form-table">
+                        <tr>
+                            <th scope="row"><?php _e('Enable Cloud OCR', 'idoklad-invoice-processor'); ?></th>
+                            <td>
+                                <label>
+                                    <input type="checkbox" name="use_cloud_ocr" value="1" <?php checked(get_option('idoklad_use_cloud_ocr'), 1); ?> />
+                                    <?php _e('Allow the plugin to call external OCR APIs when needed', 'idoklad-invoice-processor'); ?>
+                                </label>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th scope="row"><?php _e('OCR Provider', 'idoklad-invoice-processor'); ?></th>
+                            <td>
+                                <select name="cloud_ocr_service" id="cloud_ocr_service" style="max-width: 320px;">
+                                    <option value="none" <?php selected(get_option('idoklad_cloud_ocr_service', 'none'), 'none'); ?>><?php _e('Disabled', 'idoklad-invoice-processor'); ?></option>
+                                    <option value="ocr_space" <?php selected(get_option('idoklad_cloud_ocr_service'), 'ocr_space'); ?>><?php _e('OCR.space', 'idoklad-invoice-processor'); ?></option>
+                                    <option value="google_vision" <?php selected(get_option('idoklad_cloud_ocr_service'), 'google_vision'); ?>><?php _e('Google Vision', 'idoklad-invoice-processor'); ?></option>
+                                </select>
+                                <p class="description"><?php _e('OCR.space is the quickest to configure and supports Czech language.', 'idoklad-invoice-processor'); ?></p>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th scope="row"><?php _e('OCR.space API Key', 'idoklad-invoice-processor'); ?></th>
+                            <td>
+                                <input type="text" name="ocr_space_api_key" value="<?php echo esc_attr(get_option('idoklad_ocr_space_api_key')); ?>" class="regular-text" placeholder="helloworld" />
+                                <p class="description"><?php _e('Required when OCR.space is selected. Free tier available at ocr.space.', 'idoklad-invoice-processor'); ?></p>
+                                <p>
+                                    <button type="button" id="test-ocr-space" class="button button-secondary">
+                                        <?php _e('Test OCR.space Connection', 'idoklad-invoice-processor'); ?>
+                                    </button>
+                                    <span id="ocr-space-test-result"></span>
+                                </p>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th scope="row"><?php _e('OCR.space Language', 'idoklad-invoice-processor'); ?></th>
+                            <td>
+                                <input type="text" name="ocr_space_language" value="<?php echo esc_attr(get_option('idoklad_ocr_space_language', 'eng')); ?>" class="regular-text" style="width: 120px;" />
+                                <p class="description"><?php _e('Use ISO language codes (e.g. eng, cze, ger). Multiple values can be combined with +, such as ces+eng.', 'idoklad-invoice-processor'); ?></p>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th scope="row"><?php _e('Google Vision API Key', 'idoklad-invoice-processor'); ?></th>
+                            <td>
+                                <input type="text" name="google_vision_api_key" value="<?php echo esc_attr(get_option('idoklad_google_vision_api_key')); ?>" class="regular-text" />
+                                <p class="description"><?php _e('Optional: used when Google Vision is selected as the OCR provider.', 'idoklad-invoice-processor'); ?></p>
+                            </td>
+                        </tr>
+                    </table>
+                </div>
+
                 <!-- Email Settings -->
                 <div class="idoklad-settings-section">
                     <h2><?php _e('Email Settings', 'idoklad-invoice-processor'); ?></h2>
