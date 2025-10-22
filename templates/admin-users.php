@@ -56,7 +56,7 @@ $users = IDokladProcessor_Database::get_all_authorized_users();
                             <th scope="row"><?php _e('iDoklad API URL', 'idoklad-invoice-processor'); ?></th>
                             <td>
                                 <input type="url" name="idoklad_api_url" value="https://api.idoklad.cz/api/v3" class="regular-text" />
-                                <p class="description"><?php _e('iDoklad API endpoint URL (usually https://api.idoklad.cz/api/v3)', 'idoklad-invoice-processor'); ?></p>
+                                <p class="description"><?php _e('iDoklad API endpoint URL (usually https://api.idoklad.cz/api/v3). Documentation URLs such as https://api.idoklad.cz/Help/v3/... will be converted automatically.', 'idoklad-invoice-processor'); ?></p>
                             </td>
                         </tr>
                         <tr>
@@ -252,7 +252,7 @@ $users = IDokladProcessor_Database::get_all_authorized_users();
                         <th scope="row"><?php _e('iDoklad API URL', 'idoklad-invoice-processor'); ?></th>
                         <td>
                             <input type="url" id="edit-idoklad-api-url" name="idoklad_api_url" class="regular-text" />
-                            <p class="description"><?php _e('iDoklad API endpoint URL (usually https://api.idoklad.cz/api/v3)', 'idoklad-invoice-processor'); ?></p>
+                            <p class="description"><?php _e('iDoklad API endpoint URL (usually https://api.idoklad.cz/api/v3). Documentation URLs such as https://api.idoklad.cz/Help/v3/... will be converted automatically.', 'idoklad-invoice-processor'); ?></p>
                         </td>
                     </tr>
                     <tr>

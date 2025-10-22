@@ -38,6 +38,21 @@ class IDokladProcessor_IDokladAPI {
             $api_url = 'https://api.idoklad.cz/api/v3';
         }
 
+        $api_url = trim($api_url);
+
+        // Handle accidental copies of the public documentation URL
+        // (e.g. https://api.idoklad.cz/Help/v3/cs/index.html) by
+        // converting them back to the real API base path.
+        if (stripos($api_url, '/help/') !== false) {
+            $parts = parse_url($api_url);
+
+            if ($parts && isset($parts['scheme'], $parts['host'])) {
+                return $parts['scheme'] . '://' . $parts['host'] . '/api/v3';
+            }
+
+            return 'https://api.idoklad.cz/api/v3';
+        }
+
         $api_url = rtrim($api_url, '/');
 
         if (preg_match('#/api/v\d+$#', $api_url)) {
