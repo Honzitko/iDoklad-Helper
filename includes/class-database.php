@@ -29,7 +29,7 @@ class IDokladProcessor_Database {
             name varchar(100) NOT NULL,
             idoklad_client_id varchar(255) DEFAULT NULL,
             idoklad_client_secret varchar(255) DEFAULT NULL,
-            idoklad_api_url varchar(255) DEFAULT 'https://api.idoklad.cz/v3',
+            idoklad_api_url varchar(255) DEFAULT 'https://api.idoklad.cz/api/v3',
             idoklad_user_id varchar(50) DEFAULT NULL,
             is_active tinyint(1) DEFAULT 1,
             created_at datetime DEFAULT CURRENT_TIMESTAMP,
@@ -108,6 +108,10 @@ class IDokladProcessor_Database {
         global $wpdb;
         $table = $wpdb->prefix . 'idoklad_users';
         
+        if ($idoklad_api_url !== null) {
+            $idoklad_api_url = self::normalize_api_url($idoklad_api_url);
+        }
+
         return $wpdb->insert(
             $table,
             array(
@@ -115,7 +119,7 @@ class IDokladProcessor_Database {
                 'name' => $name,
                 'idoklad_client_id' => $idoklad_client_id,
                 'idoklad_client_secret' => $idoklad_client_secret,
-                'idoklad_api_url' => $idoklad_api_url ?: 'https://api.idoklad.cz/v3',
+                'idoklad_api_url' => $idoklad_api_url ?: 'https://api.idoklad.cz/api/v3',
                 'idoklad_user_id' => $idoklad_user_id
             ),
             array('%s', '%s', '%s', '%s', '%s', '%s')
@@ -129,6 +133,10 @@ class IDokladProcessor_Database {
         global $wpdb;
         $table = $wpdb->prefix . 'idoklad_users';
         
+        if (isset($data['idoklad_api_url'])) {
+            $data['idoklad_api_url'] = self::normalize_api_url($data['idoklad_api_url']);
+        }
+
         return $wpdb->update(
             $table,
             $data,
@@ -136,6 +144,31 @@ class IDokladProcessor_Database {
             array('%s', '%s', '%s', '%s', '%s', '%s', '%d'),
             array('%d')
         );
+    }
+
+    /**
+     * Normalize stored API URL values to the documented /api/v3 base.
+     */
+    private static function normalize_api_url($api_url) {
+        if (empty($api_url)) {
+            return 'https://api.idoklad.cz/api/v3';
+        }
+
+        $api_url = rtrim($api_url, '/');
+
+        if (preg_match('#/api/v\d+$#', $api_url)) {
+            return $api_url;
+        }
+
+        if (preg_match('#/v(\d+)$#', $api_url)) {
+            return preg_replace('#/v(\d+)$#', '/api/v$1', $api_url);
+        }
+
+        if (preg_match('#/api$#', $api_url)) {
+            return $api_url . '/v3';
+        }
+
+        return $api_url . '/api/v3';
     }
     
     /**

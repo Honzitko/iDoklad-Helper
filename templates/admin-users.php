@@ -55,8 +55,8 @@ $users = IDokladProcessor_Database::get_all_authorized_users();
                         <tr>
                             <th scope="row"><?php _e('iDoklad API URL', 'idoklad-invoice-processor'); ?></th>
                             <td>
-                                <input type="url" name="idoklad_api_url" value="https://api.idoklad.cz/v3" class="regular-text" />
-                                <p class="description"><?php _e('iDoklad API endpoint URL (usually https://api.idoklad.cz/v3)', 'idoklad-invoice-processor'); ?></p>
+                                <input type="url" name="idoklad_api_url" value="https://api.idoklad.cz/api/v3" class="regular-text" />
+                                <p class="description"><?php _e('iDoklad API endpoint URL (usually https://api.idoklad.cz/api/v3)', 'idoklad-invoice-processor'); ?></p>
                             </td>
                         </tr>
                         <tr>
@@ -103,7 +103,7 @@ $users = IDokladProcessor_Database::get_all_authorized_users();
                                             <span style="color: red;"><?php _e('Not configured', 'idoklad-invoice-processor'); ?></span>
                                         <?php endif; ?>
                                     </td>
-                                    <td><?php echo esc_html($user->idoklad_api_url ?: 'https://api.idoklad.cz/v3'); ?></td>
+                                    <td><?php echo esc_html($user->idoklad_api_url ?: 'https://api.idoklad.cz/api/v3'); ?></td>
                                     <td>
                                         <?php if ($user->is_active): ?>
                                             <span style="color: green;"><?php _e('Active', 'idoklad-invoice-processor'); ?></span>
@@ -183,7 +183,7 @@ $users = IDokladProcessor_Database::get_all_authorized_users();
                     <li><?php _e('Add them to the user settings above', 'idoklad-invoice-processor'); ?></li>
                 </ol>
                 <p><strong><?php _e('OAuth Endpoint:', 'idoklad-invoice-processor'); ?></strong> <code>https://app.idoklad.cz/identity/server/connect/token</code></p>
-                <p><strong><?php _e('API Endpoint:', 'idoklad-invoice-processor'); ?></strong> <code>https://api.idoklad.cz/v3</code></p>
+                <p><strong><?php _e('API Endpoint:', 'idoklad-invoice-processor'); ?></strong> <code>https://api.idoklad.cz/api/v3</code></p>
             </div>
             
             <div class="idoklad-widget">
@@ -252,7 +252,7 @@ $users = IDokladProcessor_Database::get_all_authorized_users();
                         <th scope="row"><?php _e('iDoklad API URL', 'idoklad-invoice-processor'); ?></th>
                         <td>
                             <input type="url" id="edit-idoklad-api-url" name="idoklad_api_url" class="regular-text" />
-                            <p class="description"><?php _e('iDoklad API endpoint URL (usually https://api.idoklad.cz/v3)', 'idoklad-invoice-processor'); ?></p>
+                            <p class="description"><?php _e('iDoklad API endpoint URL (usually https://api.idoklad.cz/api/v3)', 'idoklad-invoice-processor'); ?></p>
                         </td>
                     </tr>
                     <tr>
@@ -307,7 +307,7 @@ jQuery(document).ready(function($) {
                     $('#edit-user-email').val(user.email);
                     $('#edit-user-name').val(user.name);
                     $('#edit-idoklad-client-id').val(user.idoklad_client_id || '');
-                    $('#edit-idoklad-api-url').val(user.idoklad_api_url || 'https://api.idoklad.cz/v3');
+                    $('#edit-idoklad-api-url').val(user.idoklad_api_url || 'https://api.idoklad.cz/api/v3');
                     $('#edit-idoklad-user-id').val(user.idoklad_user_id || '');
                     $('#edit-user-active').prop('checked', user.is_active == 1);
                     

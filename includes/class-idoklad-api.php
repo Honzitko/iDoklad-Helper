@@ -18,16 +18,41 @@ class IDokladProcessor_IDokladAPI {
     
     public function __construct($user_credentials = null) {
         if ($user_credentials) {
-            $this->api_url = $user_credentials->idoklad_api_url ?: 'https://api.idoklad.cz/v3';
+            $this->api_url = $this->normalize_api_url($user_credentials->idoklad_api_url ?? null);
             $this->client_id = $user_credentials->idoklad_client_id;
             $this->client_secret = $user_credentials->idoklad_client_secret;
             $this->user_id = $user_credentials->idoklad_user_id;
         } else {
             // Fallback to global settings (deprecated)
-            $this->api_url = get_option('idoklad_api_url', 'https://api.idoklad.cz/v3');
+            $this->api_url = $this->normalize_api_url(get_option('idoklad_api_url'));
             $this->client_id = get_option('idoklad_client_id');
             $this->client_secret = get_option('idoklad_client_secret');
         }
+    }
+
+    /**
+     * Ensure the API base URL always targets the documented /api/v3 endpoints.
+     */
+    private function normalize_api_url($api_url) {
+        if (empty($api_url)) {
+            $api_url = 'https://api.idoklad.cz/api/v3';
+        }
+
+        $api_url = rtrim($api_url, '/');
+
+        if (preg_match('#/api/v\d+$#', $api_url)) {
+            return $api_url;
+        }
+
+        if (preg_match('#/v(\d+)$#', $api_url)) {
+            return preg_replace('#/v(\d+)$#', '/api/v$1', $api_url);
+        }
+
+        if (preg_match('#/api$#', $api_url)) {
+            return $api_url . '/v3';
+        }
+
+        return $api_url . '/api/v3';
     }
     
     /**
