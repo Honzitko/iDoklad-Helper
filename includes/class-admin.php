@@ -152,10 +152,15 @@ class IDokladProcessor_Admin {
         register_setting('idoklad_pdfco_settings', 'idoklad_use_pdfco');
         register_setting('idoklad_pdfco_settings', 'idoklad_pdfco_api_key');
         register_setting('idoklad_pdfco_settings', 'idoklad_use_ai_parser');
-        
+
+        // ChatGPT settings
+        register_setting('idoklad_chatgpt_settings', 'idoklad_chatgpt_api_key');
+        register_setting('idoklad_chatgpt_settings', 'idoklad_chatgpt_model');
+        register_setting('idoklad_chatgpt_settings', 'idoklad_chatgpt_prompt');
+
         // PDF processing settings (FALLBACK)
         register_setting('idoklad_pdf_settings', 'idoklad_use_native_parser_first');
-        
+
         // OCR settings (LEGACY - only used if PDF.co disabled)
         register_setting('idoklad_ocr_settings', 'idoklad_enable_ocr');
         register_setting('idoklad_ocr_settings', 'idoklad_use_tesseract');
@@ -291,7 +296,20 @@ class IDokladProcessor_Admin {
         } else {
             update_option('idoklad_use_ai_parser', 0);
         }
-        
+
+        // Save ChatGPT settings
+        if (isset($_POST['chatgpt_api_key'])) {
+            update_option('idoklad_chatgpt_api_key', sanitize_text_field($_POST['chatgpt_api_key']));
+        }
+
+        if (isset($_POST['chatgpt_model'])) {
+            update_option('idoklad_chatgpt_model', sanitize_text_field($_POST['chatgpt_model']));
+        }
+
+        if (isset($_POST['chatgpt_prompt'])) {
+            update_option('idoklad_chatgpt_prompt', sanitize_textarea_field($_POST['chatgpt_prompt']));
+        }
+
         // Save email settings
         if (isset($_POST['email_host'])) {
             update_option('idoklad_email_host', sanitize_text_field($_POST['email_host']));
