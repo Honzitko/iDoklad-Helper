@@ -598,11 +598,40 @@ class IDokladProcessor_EmailMonitor {
             $this->validate_ai_parsed_data($idoklad_data, $email->id);
         }
         
+        // Ensure PartnerId exists before creating the invoice
+        if (empty($idoklad_data['PartnerId']) || (int)$idoklad_data['PartnerId'] === 0) {
+            $supplier_context = $extracted_data;
+
+            if (empty($supplier_context['supplier_name']) && !empty($idoklad_data['PartnerName'])) {
+                $supplier_context['supplier_name'] = $idoklad_data['PartnerName'];
+            }
+
+            if (empty($supplier_context['supplier_vat_number']) && !empty($idoklad_data['SupplierIdentificationNumber'])) {
+                $supplier_context['supplier_vat_number'] = $idoklad_data['SupplierIdentificationNumber'];
+            }
+
+            if (empty($supplier_context['supplier_name'])) {
+                throw new Exception('Supplier name missing - cannot create iDoklad contact.');
+            }
+
+            IDokladProcessor_Database::add_queue_step($email->id, 'Ensuring supplier exists in iDoklad', array(
+                'supplier_name' => $supplier_context['supplier_name']
+            ));
+
+            $partner_id = $idoklad_api->get_or_create_supplier($supplier_context);
+            $idoklad_data['PartnerId'] = $partner_id;
+
+            IDokladProcessor_Database::add_queue_step($email->id, 'Supplier synchronized with iDoklad', array(
+                'partner_id' => $partner_id
+            ));
+        }
+
         // Step 8: Create invoice in iDoklad using user's credentials
         IDokladProcessor_Database::add_queue_step($email->id, 'Creating invoice in iDoklad', array(
-            'document_number' => $idoklad_data['DocumentNumber'] ?? 'N/A'
+            'document_number' => $idoklad_data['DocumentNumber'] ?? 'N/A',
+            'partner_id' => $idoklad_data['PartnerId'] ?? 'MISSING'
         ));
-        
+
         // Use transformed iDoklad data (already in correct API format)
         $idoklad_response = $idoklad_api->create_invoice($idoklad_data);
         
