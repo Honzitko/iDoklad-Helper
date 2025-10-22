@@ -229,7 +229,7 @@ if (!defined('ABSPATH')) {
                 <p><strong><?php _e('OpenSSL Version:', 'idoklad-invoice-processor'); ?></strong> <?php echo OPENSSL_VERSION_TEXT ?? 'Not available'; ?></p>
                 <p><strong><?php _e('SSL Verify:', 'idoklad-invoice-processor'); ?></strong> 
                     <?php 
-                    $ssl_test = wp_remote_get('https://api.idoklad.cz/v3', array('sslverify' => true, 'timeout' => 10));
+                    $ssl_test = wp_remote_get('https://api.idoklad.cz/api/v3', array('sslverify' => true, 'timeout' => 10));
                     if (is_wp_error($ssl_test)) {
                         echo '<span style="color: red;">✗ Failed: ' . $ssl_test->get_error_message() . '</span>';
                     } else {
