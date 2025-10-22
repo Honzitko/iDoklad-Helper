@@ -707,50 +707,45 @@ class IDokladProcessor_EmailMonitor {
             $this->validate_ai_parsed_data($idoklad_data, $email->id);
         }
         
-        // Ensure PartnerId exists before creating the invoice
-        if (empty($idoklad_data['PartnerId']) || (int)$idoklad_data['PartnerId'] === 0) {
-            $supplier_context = $extracted_data;
+        $partner_payload = array(
+            'CompanyName' => $idoklad_data['PartnerName'] ?? ($extracted_data['supplier_name'] ?? ''),
+            'Email' => $extracted_data['supplier_email'] ?? '',
+            'CountryId' => isset($idoklad_data['PartnerAddress']['CountryId']) ? (int) $idoklad_data['PartnerAddress']['CountryId'] : 1,
+            'Street' => $idoklad_data['PartnerAddress']['Street'] ?? '',
+            'City' => $idoklad_data['PartnerAddress']['City'] ?? '',
+            'PostalCode' => $idoklad_data['PartnerAddress']['PostalCode'] ?? '',
+        );
 
-            if (empty($supplier_context['supplier_name']) && !empty($idoklad_data['PartnerName'])) {
-                $supplier_context['supplier_name'] = $idoklad_data['PartnerName'];
-            }
+        $invoice_context = array(
+            'PartnerId' => $idoklad_data['PartnerId'] ?? null,
+            'PartnerName' => $partner_payload['CompanyName'],
+            'PartnerEmail' => $partner_payload['Email'],
+            'Partner' => array_filter($partner_payload, function ($value) {
+                return $value !== null && $value !== '';
+            }),
+        );
 
-            if (empty($supplier_context['supplier_vat_number']) && !empty($idoklad_data['SupplierIdentificationNumber'])) {
-                $supplier_context['supplier_vat_number'] = $idoklad_data['SupplierIdentificationNumber'];
-            }
-
-            if (empty($supplier_context['supplier_name'])) {
-                throw new Exception('Supplier name missing - cannot create iDoklad contact.');
-            }
-
-            IDokladProcessor_Database::add_queue_step($email->id, 'Ensuring supplier exists in iDoklad', array(
-                'supplier_name' => $supplier_context['supplier_name']
-            ));
-
-            $partner_id = $idoklad_api->get_or_create_supplier($supplier_context);
-            $idoklad_data['PartnerId'] = $partner_id;
-
-            IDokladProcessor_Database::add_queue_step($email->id, 'Supplier synchronized with iDoklad', array(
-                'partner_id' => $partner_id
-            ));
-        }
-
-        // Step 8: Create invoice in iDoklad using user's credentials
-        IDokladProcessor_Database::add_queue_step($email->id, 'Creating invoice in iDoklad', array(
-            'document_number' => $idoklad_data['DocumentNumber'] ?? 'N/A',
-            'partner_id' => $idoklad_data['PartnerId'] ?? 'MISSING'
+        IDokladProcessor_Database::add_queue_step($email->id, 'Creating issued invoice in iDoklad', array(
+            'partner_id' => $invoice_context['PartnerId'] ?? 'auto',
+            'partner_name' => $partner_payload['CompanyName'] ?? 'N/A'
         ));
 
-        // Use transformed iDoklad data (already in correct API format)
-        $idoklad_response = $idoklad_api->create_invoice($idoklad_data);
-        
-        if (!$idoklad_response) {
-            IDokladProcessor_Database::add_queue_step($email->id, 'ERROR: Failed to create invoice in iDoklad');
-            throw new Exception('Failed to create invoice in iDoklad');
+        $idoklad_response = $idoklad_api->create_invoice($invoice_context);
+
+        $status_code = (int) ($idoklad_response['StatusCode'] ?? 0);
+
+        if ($status_code >= 400 || empty($idoklad_response)) {
+            IDokladProcessor_Database::add_queue_step($email->id, 'ERROR: Failed to create invoice in iDoklad', array(
+                'status_code' => $status_code,
+                'message' => $idoklad_response['Message'] ?? null,
+            ));
+            throw new Exception($idoklad_response['Message'] ?? 'Failed to create invoice in iDoklad');
         }
-        
-        IDokladProcessor_Database::add_queue_step($email->id, 'Invoice created in iDoklad successfully', array(
-            'response' => is_array($idoklad_response) ? array_keys($idoklad_response) : 'Response received'
+
+        IDokladProcessor_Database::add_queue_step($email->id, 'Issued invoice created in iDoklad successfully', array(
+            'invoice_id' => $idoklad_response['Data']['Id'] ?? null,
+            'document_number' => $idoklad_response['Data']['DocumentNumber'] ?? null,
+            'status_code' => $status_code
         ));
 
         try {
@@ -760,7 +755,7 @@ class IDokladProcessor_EmailMonitor {
                     'subject' => $email->email_subject,
                     'email_id' => $email->email_id ?? $email->id,
                     'received_at' => function_exists('current_time') ? current_time('mysql') : date('Y-m-d H:i:s'),
-                    'document_number' => $idoklad_data['DocumentNumber'] ?? ($idoklad_response['DocumentNumber'] ?? null),
+                    'document_number' => $idoklad_data['DocumentNumber'] ?? ($idoklad_response['Data']['DocumentNumber'] ?? null),
                     'notes' => 'Invoice created successfully',
                 ),
                 $attachment_info,

@@ -1416,49 +1416,37 @@ class IDokladProcessor_Admin {
         try {
             require_once IDOKLAD_PROCESSOR_PLUGIN_DIR . 'includes/class-idoklad-api.php';
             $idoklad_api = new IDokladProcessor_IDokladAPI($user);
-            
-            // Enable debug mode for this test
+
             $original_debug = get_option('idoklad_debug_mode');
             update_option('idoklad_debug_mode', true);
-            
-            // Clear previous response
-            delete_option('idoklad_last_api_response');
-            
+
             $start_time = microtime(true);
             $response = $idoklad_api->create_invoice_with_response($data);
             $end_time = microtime(true);
             $request_time = round(($end_time - $start_time) * 1000, 2);
-            
-            // Get captured API response
-            $api_response = get_option('idoklad_last_api_response');
-            
-            // Restore debug mode
+
             update_option('idoklad_debug_mode', $original_debug);
-            
+
             wp_send_json_success(array(
                 'response' => $response,
                 'request_time_ms' => $request_time,
                 'user_name' => $user->name,
-                'api_url' => $user->idoklad_api_url,
-                'endpoint' => '/ReceivedInvoices (Received invoice - expense)',
-                'api_response' => $api_response
+                'endpoint' => '/IssuedInvoices',
+                'status_code' => $response['StatusCode'] ?? null,
+                'invoice_id' => $response['Data']['Id'] ?? null,
+                'document_number' => $response['Data']['DocumentNumber'] ?? null,
+                'message' => $response['Message'] ?? null
             ));
-            
+
         } catch (Exception $e) {
-            // Restore debug mode
             if (isset($original_debug)) {
                 update_option('idoklad_debug_mode', $original_debug);
             }
-            
-            // Get captured API response (if any)
-            $api_response = get_option('idoklad_last_api_response');
-            
+
             wp_send_json_error(array(
                 'message' => $e->getMessage(),
                 'help' => 'Check WordPress debug.log for detailed API request/response. Enable Debug Mode in Settings for permanent logging.',
-                'endpoint_used' => '/ReceivedInvoices',
-                'note' => 'This creates a RECEIVED invoice (expense). For invoices you send out, the endpoint would be /IssuedInvoices',
-                'api_response' => $api_response
+                'endpoint_used' => '/IssuedInvoices'
             ));
         }
     }
