@@ -65,9 +65,13 @@ class IDokladProcessor_EmailMonitor {
         if (empty($this->host) || empty($this->username) || empty($this->password)) {
             throw new Exception('Email settings are not configured');
         }
-        
+
+        if (!function_exists('imap_open')) {
+            throw new Exception('IMAP functions are not available on this server. Please enable the PHP IMAP extension.');
+        }
+
         $connection_string = '{' . $this->host . ':' . $this->port . '/imap/' . $this->encryption . '}INBOX';
-        
+
         if (get_option('idoklad_debug_mode')) {
             error_log('iDoklad Email Monitor: Connecting to ' . $connection_string);
         }
