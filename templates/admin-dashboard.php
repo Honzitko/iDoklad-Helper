@@ -30,8 +30,6 @@ $recent_logs = $wpdb->get_results("SELECT * FROM $logs_table ORDER BY created_at
 
 // Get settings status
 $email_monitor_enabled = get_option('idoklad_enable_email_monitor', false);
-$ocr_enabled = get_option('idoklad_enable_ocr', false);
-$zapier_url = get_option('idoklad_zapier_webhook_url', '');
 $authorized_users = IDokladProcessor_Database::get_all_authorized_users();
 ?>
 
@@ -122,26 +120,6 @@ $authorized_users = IDokladProcessor_Database::get_all_authorized_users();
                                 <span class="status-badge status-active">✓ Active</span>
                             <?php else: ?>
                                 <span class="status-badge status-inactive">✗ Inactive</span>
-                            <?php endif; ?>
-                        </td>
-                    </tr>
-                    <tr>
-                        <td><strong><?php _e('OCR for Scanned PDFs', 'idoklad-invoice-processor'); ?></strong></td>
-                        <td>
-                            <?php if ($ocr_enabled): ?>
-                                <span class="status-badge status-active">✓ Enabled</span>
-                            <?php else: ?>
-                                <span class="status-badge status-inactive">✗ Disabled</span>
-                            <?php endif; ?>
-                        </td>
-                    </tr>
-                    <tr>
-                        <td><strong><?php _e('Zapier Integration', 'idoklad-invoice-processor'); ?></strong></td>
-                        <td>
-                            <?php if (!empty($zapier_url)): ?>
-                                <span class="status-badge status-active">✓ Configured</span>
-                            <?php else: ?>
-                                <span class="status-badge status-inactive">✗ Not Configured</span>
                             <?php endif; ?>
                         </td>
                     </tr>

@@ -7,31 +7,24 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-// Include native PHP PDF parser and OCR processor
+// Include native PHP PDF parser
 require_once IDOKLAD_PROCESSOR_PLUGIN_DIR . 'includes/class-pdf-parser-native.php';
-require_once IDOKLAD_PROCESSOR_PLUGIN_DIR . 'includes/class-ocr-processor.php';
 
 class IDokladProcessor_PDFProcessor {
     
     private $temp_dir;
     private $native_parser;
-    private $ocr_processor;
     private $use_native_parser_first;
-    private $enable_ocr;
+    private $use_pdfco;
     
     public function __construct() {
         $this->temp_dir = sys_get_temp_dir();
         $this->native_parser = new IDokladProcessor_NativePDFParser();
-        $this->ocr_processor = new IDokladProcessor_OCRProcessor();
         // Use native parser first by default (no external dependencies)
         $this->use_native_parser_first = get_option('idoklad_use_native_parser_first', true);
-        // Enable OCR for scanned PDFs
-        $this->enable_ocr = get_option('idoklad_enable_ocr', true);
         // Use PDF.co as primary processor (replaces all other methods)
         $this->use_pdfco = get_option('idoklad_use_pdfco', true);
     }
-    
-    private $use_pdfco;
     
     /**
      * Extract text from PDF file
@@ -48,196 +41,22 @@ class IDokladProcessor_PDFProcessor {
             error_log('iDoklad PDF Processor: Extracting text from ' . $pdf_path);
         }
         
-        // If PDF.co is enabled, use it exclusively (it handles both regular PDFs and OCR)
-        if ($this->use_pdfco) {
-            if ($queue_id) {
-                IDokladProcessor_Database::add_queue_step($queue_id, 'PDF Processing: Using PDF.co cloud service', null, false);
-            }
-            
-            try {
-                require_once IDOKLAD_PROCESSOR_PLUGIN_DIR . 'includes/class-pdfco-processor.php';
-                $pdfco = new IDokladProcessor_PDFCoProcessor();
-                $text = $pdfco->extract_text($pdf_path, $queue_id);
-                
-                if (get_option('idoklad_debug_mode')) {
-                    error_log('iDoklad PDF Processor: PDF.co extracted ' . strlen($text) . ' characters');
-                }
-                
-                return $this->clean_extracted_text($text);
-                
-            } catch (Exception $e) {
-                if ($queue_id) {
-                    IDokladProcessor_Database::add_queue_step($queue_id, 'PDF.co failed: ' . $e->getMessage(), null, false);
-                }
-                
-                if (get_option('idoklad_debug_mode')) {
-                    error_log('iDoklad PDF Processor: PDF.co failed, will try fallback methods: ' . $e->getMessage());
-                }
-                // If PDF.co fails, continue with fallback methods below
-            }
+        // ONLY use PDF.co - NO FALLBACKS!
+        // If PDF.co fails, the entire process STOPS
+        if ($queue_id) {
+            IDokladProcessor_Database::add_queue_step($queue_id, 'PDF Processing: Using PDF.co cloud service', null, false);
         }
         
-        $text = '';
-        $methods_used = array();
+        require_once IDOKLAD_PROCESSOR_PLUGIN_DIR . 'includes/class-pdfco-processor.php';
+        $pdfco = new IDokladProcessor_PDFCoProcessor();
+        $text = $pdfco->extract_text($pdf_path, $queue_id);
         
-        // Try different methods to extract text
-        if ($this->use_native_parser_first) {
-            // Try native PHP parser first (no external dependencies)
-            if ($queue_id) {
-                IDokladProcessor_Database::add_queue_step($queue_id, 'PDF Parsing: Trying native PHP parser', null, false);
-            }
-            
-            $text = $this->extract_with_native_parser($pdf_path);
-            if (!empty($text)) {
-                $methods_used[] = 'native PHP parser';
-                if ($queue_id) {
-                    IDokladProcessor_Database::add_queue_step($queue_id, 'PDF Parsing: Native PHP parser succeeded', array(
-                        'characters' => strlen($text)
-                    ), false);
-                }
-            } else {
-                if ($queue_id) {
-                    IDokladProcessor_Database::add_queue_step($queue_id, 'PDF Parsing: Native PHP parser failed/empty', null, false);
-                }
-            }
-        }
-        
-        // Fallback to command-line tools if native parser fails or is disabled
-        if (empty($text)) {
-            if ($queue_id) {
-                IDokladProcessor_Database::add_queue_step($queue_id, 'PDF Parsing: Trying pdftotext', null, false);
-            }
-            $text = $this->extract_with_pdftotext($pdf_path);
-            if (!empty($text)) {
-                $methods_used[] = 'pdftotext';
-                if ($queue_id) {
-                    IDokladProcessor_Database::add_queue_step($queue_id, 'PDF Parsing: pdftotext succeeded', array('characters' => strlen($text)), false);
-                }
-            } else {
-                if ($queue_id) {
-                    IDokladProcessor_Database::add_queue_step($queue_id, 'PDF Parsing: pdftotext not available/failed', null, false);
-                }
-            }
-        }
-        
-        if (empty($text)) {
-            if ($queue_id) {
-                IDokladProcessor_Database::add_queue_step($queue_id, 'PDF Parsing: Trying poppler', null, false);
-            }
-            $text = $this->extract_with_poppler($pdf_path);
-            if (!empty($text)) {
-                $methods_used[] = 'poppler';
-                if ($queue_id) {
-                    IDokladProcessor_Database::add_queue_step($queue_id, 'PDF Parsing: poppler succeeded', array('characters' => strlen($text)), false);
-                }
-            } else {
-                if ($queue_id) {
-                    IDokladProcessor_Database::add_queue_step($queue_id, 'PDF Parsing: poppler not available/failed', null, false);
-                }
-            }
-        }
-        
-        if (empty($text)) {
-            if ($queue_id) {
-                IDokladProcessor_Database::add_queue_step($queue_id, 'PDF Parsing: Trying ghostscript', null, false);
-            }
-            $text = $this->extract_with_ghostscript($pdf_path);
-            if (!empty($text)) {
-                $methods_used[] = 'ghostscript';
-                if ($queue_id) {
-                    IDokladProcessor_Database::add_queue_step($queue_id, 'PDF Parsing: ghostscript succeeded', array('characters' => strlen($text)), false);
-                }
-            } else {
-                if ($queue_id) {
-                    IDokladProcessor_Database::add_queue_step($queue_id, 'PDF Parsing: ghostscript not available/failed', null, false);
-                }
-            }
-        }
-        
-        // If native parser wasn't tried first, try it as a last resort
-        if (empty($text) && !$this->use_native_parser_first) {
-            if ($queue_id) {
-                IDokladProcessor_Database::add_queue_step($queue_id, 'PDF Parsing: Trying native PHP parser (fallback)', null, false);
-            }
-            $text = $this->extract_with_native_parser($pdf_path);
-            if (!empty($text)) {
-                $methods_used[] = 'native PHP parser (fallback)';
-                if ($queue_id) {
-                    IDokladProcessor_Database::add_queue_step($queue_id, 'PDF Parsing: Native PHP parser succeeded', array('characters' => strlen($text)), false);
-                }
-            }
-        }
-        
-        // Check if we got very little text (might be a scanned PDF)
-        if (strlen(trim($text)) < 50 && $this->enable_ocr) {
-            if (get_option('idoklad_debug_mode')) {
-                error_log('iDoklad PDF Processor: Very little text extracted (' . strlen($text) . ' chars). Checking if PDF is scanned...');
-            }
-            
-            if ($queue_id) {
-                IDokladProcessor_Database::add_queue_step($queue_id, 'PDF Parsing: Very little text extracted, checking for scanned PDF', array(
-                    'characters' => strlen($text)
-                ), false);
-            }
-            
-            // Check if it's a scanned PDF
-            if ($this->ocr_processor->is_scanned_pdf($pdf_path, $text)) {
-                if (get_option('idoklad_debug_mode')) {
-                    error_log('iDoklad PDF Processor: PDF appears to be scanned. Attempting OCR...');
-                }
-                
-                if ($queue_id) {
-                    IDokladProcessor_Database::add_queue_step($queue_id, 'PDF Parsing: PDF is scanned, attempting OCR', null, false);
-                }
-                
-                try {
-                    $ocr_text = $this->ocr_processor->extract_text_from_scanned_pdf($pdf_path);
-                    
-                    if (!empty($ocr_text)) {
-                        $text = $ocr_text;
-                        $methods_used[] = 'OCR (scanned PDF)';
-                        
-                        if ($queue_id) {
-                            IDokladProcessor_Database::add_queue_step($queue_id, 'PDF Parsing: OCR succeeded', array(
-                                'characters' => strlen($ocr_text)
-                            ), false);
-                        }
-                        
-                        if (get_option('idoklad_debug_mode')) {
-                            error_log('iDoklad PDF Processor: OCR successful. Extracted ' . strlen($text) . ' characters');
-                        }
-                    } else {
-                        if ($queue_id) {
-                            IDokladProcessor_Database::add_queue_step($queue_id, 'PDF Parsing: OCR returned empty text', null, false);
-                        }
-                    }
-                } catch (Exception $e) {
-                    if (get_option('idoklad_debug_mode')) {
-                        error_log('iDoklad PDF Processor: OCR failed: ' . $e->getMessage());
-                    }
-                    if ($queue_id) {
-                        IDokladProcessor_Database::add_queue_step($queue_id, 'PDF Parsing: OCR failed', array(
-                            'error' => $e->getMessage()
-                        ), false);
-                    }
-                }
-            } else {
-                if ($queue_id) {
-                    IDokladProcessor_Database::add_queue_step($queue_id, 'PDF Parsing: PDF does not appear to be scanned', null, false);
-                }
-            }
-        }
-        
-        if (empty($text)) {
-            throw new Exception('Could not extract text from PDF. The PDF might be image-based, encrypted, or corrupted. If this is a scanned PDF, please ensure OCR is enabled and Tesseract is installed.');
+        if (get_option('idoklad_debug_mode')) {
+            error_log('iDoklad PDF Processor: PDF.co extracted ' . strlen($text) . ' characters');
         }
         
         // Clean up extracted text
         $text = $this->clean_extracted_text($text);
-        
-        if (get_option('idoklad_debug_mode')) {
-            error_log('iDoklad PDF Processor: Extracted ' . strlen($text) . ' characters of text using: ' . implode(', ', $methods_used));
-        }
         
         return $text;
     }
@@ -417,55 +236,21 @@ class IDokladProcessor_PDFProcessor {
             )
         );
         
-        // Add OCR methods
-        if ($this->enable_ocr) {
-            $ocr_methods = $this->ocr_processor->test_ocr_methods();
-            foreach ($ocr_methods as $key => $method) {
-                $results['ocr_' . $key] = array(
-                    'available' => $method['available'],
-                    'name' => $method['name'],
-                    'description' => $method['description'],
-                    'category' => 'OCR (Scanned PDFs)',
-                    'enabled' => $method['enabled']
-                );
-            }
-        }
+        // OCR is now handled by PDF.co automatically
         
         return $results;
     }
     
     /**
-     * Test OCR capabilities
+     * Test OCR capabilities (now handled by PDF.co)
      */
     public function test_ocr_capabilities() {
-        if (!$this->enable_ocr) {
-            return array(
-                'enabled' => false,
-                'message' => 'OCR is disabled in settings'
-            );
-        }
-        
-        $ocr_methods = $this->ocr_processor->test_ocr_methods();
-        
-        $has_pdf_converter = (
-            $ocr_methods['imagemagick']['available'] ||
-            $ocr_methods['ghostscript']['available'] ||
-            $ocr_methods['imagick_extension']['available']
-        );
-        
-        $has_ocr_engine = (
-            $ocr_methods['tesseract']['available'] ||
-            $ocr_methods['ocr_space']['available'] ||
-            $ocr_methods['google_vision']['available']
-        );
-        
         return array(
             'enabled' => true,
-            'can_process_scanned_pdfs' => $has_pdf_converter && $has_ocr_engine,
-            'has_pdf_converter' => $has_pdf_converter,
-            'has_ocr_engine' => $has_ocr_engine,
-            'methods' => $ocr_methods
+            'message' => 'OCR is handled automatically by PDF.co'
         );
+        
+        // Legacy code removed - PDF.co handles OCR automatically
     }
     
     /**

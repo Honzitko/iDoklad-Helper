@@ -1006,10 +1006,41 @@ jQuery(document).ready(function($) {
         });
     });
     
+    // Test AI Parser
+    $('#test-ai-parser').on('click', function() {
+        var button = $(this);
+        var resultSpan = $('#pdfco-test-result');
+        
+        button.prop('disabled', true).text('Testing AI Parser...');
+        resultSpan.html('');
+        
+        $.ajax({
+            url: idoklad_ajax.ajax_url,
+            type: 'POST',
+            data: {
+                action: 'idoklad_test_ai_parser',
+                nonce: idoklad_ajax.nonce
+            },
+            success: function(response) {
+                if (response.success) {
+                    resultSpan.html('<span style="color: green;">✓ ' + escapeHtml(response.data.message) + '</span>');
+                } else {
+                    resultSpan.html('<span style="color: red;">✗ ' + escapeHtml(response.data) + '</span>');
+                }
+            },
+            error: function() {
+                resultSpan.html('<span style="color: red;">✗ AI Parser test failed</span>');
+            },
+            complete: function() {
+                button.prop('disabled', false).text('Test AI Parser');
+            }
+        });
+    });
+    
     // ===== DASHBOARD PAGE =====
     
     // Force email check
-    $('#force-email-check').on('click', function() {
+    $(document).on('click', '#force-email-check', function() {
         var button = $(this);
         var originalText = button.html();
         
@@ -1024,20 +1055,102 @@ jQuery(document).ready(function($) {
                 nonce: idoklad_ajax.nonce
             },
             success: function(response) {
+                console.log('Force email check response:', response);
+                button.prop('disabled', false);
+                button.html(originalText);
+                
                 if (response.success) {
-                    alert('Success: ' + response.data.message);
+                    var message = 'Success!';
+                    if (response.data && response.data.message) {
+                        message = response.data.message;
+                    }
+                    alert(message);
                     // Reload the page to show updated stats
                     location.reload();
                 } else {
-                    alert('Error: ' + response.data);
+                    var errorMsg = 'Unknown error';
+                    if (typeof response.data === 'string') {
+                        errorMsg = response.data;
+                    } else if (response.data && response.data.message) {
+                        errorMsg = response.data.message;
+                    }
+                    alert('Error: ' + errorMsg);
                 }
             },
-            error: function() {
-                alert('Error: Failed to check emails');
-            },
-            complete: function() {
+            error: function(xhr, status, error) {
+                console.error('Email check error:', xhr, status, error);
+                console.error('Response text:', xhr.responseText);
                 button.prop('disabled', false);
                 button.html(originalText);
+                
+                var errorMsg = 'Failed to check emails';
+                if (xhr.responseText) {
+                    try {
+                        var resp = JSON.parse(xhr.responseText);
+                        if (resp.data) {
+                            errorMsg = resp.data;
+                        }
+                    } catch (e) {
+                        errorMsg = xhr.responseText.substring(0, 200);
+                    }
+                }
+                alert('Error: ' + errorMsg + '. Check console for details.');
+            }
+        });
+    });
+    
+    // Process queue now (Dashboard)
+    $(document).on('click', '#process-queue-now', function() {
+        var button = $(this);
+        var originalText = button.html();
+        
+        button.prop('disabled', true);
+        button.html('<span class="dashicons dashicons-update spin"></span> Processing...');
+        
+        $.ajax({
+            url: idoklad_ajax.ajax_url,
+            type: 'POST',
+            data: {
+                action: 'idoklad_process_queue_manually',
+                nonce: idoklad_ajax.nonce
+            },
+            success: function(response) {
+                console.log('Process queue response:', response);
+                button.prop('disabled', false);
+                button.html(originalText);
+                
+                if (response.success) {
+                    var message = typeof response.data === 'string' ? response.data : 'Queue processed successfully';
+                    alert('Success: ' + message);
+                    location.reload();
+                } else {
+                    var errorMsg = 'Unknown error';
+                    if (typeof response.data === 'string') {
+                        errorMsg = response.data;
+                    } else if (response.data && response.data.message) {
+                        errorMsg = response.data.message;
+                    }
+                    alert('Error: ' + errorMsg);
+                }
+            },
+            error: function(xhr, status, error) {
+                console.error('Process queue error:', xhr, status, error);
+                console.error('Response text:', xhr.responseText);
+                button.prop('disabled', false);
+                button.html(originalText);
+                
+                var errorMsg = 'Failed to process queue';
+                if (xhr.responseText) {
+                    try {
+                        var resp = JSON.parse(xhr.responseText);
+                        if (resp.data) {
+                            errorMsg = resp.data;
+                        }
+                    } catch (e) {
+                        errorMsg = xhr.responseText.substring(0, 200);
+                    }
+                }
+                alert('Error: ' + errorMsg + '. Check console for details.');
             }
         });
     });

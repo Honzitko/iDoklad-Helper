@@ -249,29 +249,17 @@ class IDokladProcessor_IDokladAPI {
     
     /**
      * Create invoice with response capture (for testing/diagnostics)
+     * Note: This accepts already-transformed data from the DataTransformer
      */
-    public function create_invoice_with_response($extracted_data) {
-        if (get_option('idoklad_debug_mode')) {
-            error_log('iDoklad API: Creating received invoice (expense) with data: ' . json_encode($extracted_data));
-        }
+    public function create_invoice_with_response($idoklad_payload) {
+        error_log('iDoklad API: Creating received invoice with payload (test mode): ' . json_encode($idoklad_payload, JSON_PRETTY_PRINT));
         
         try {
-            // For received invoices, use the ReceivedInvoices endpoint
-            $supplier_id = $this->get_or_create_supplier($extracted_data);
-            
-            // Build received invoice data
-            $invoice_data = $this->build_received_invoice_data($extracted_data, $supplier_id);
-            
-            if (get_option('idoklad_debug_mode')) {
-                error_log('iDoklad API: Sending payload: ' . json_encode($invoice_data, JSON_PRETTY_PRINT));
-            }
-            
+            // The payload is already in iDoklad format from the DataTransformer
             // Create received invoice with response capture
-            $response = $this->make_api_request('/ReceivedInvoices', 'POST', $invoice_data, true);
+            $response = $this->make_api_request('/ReceivedInvoices', 'POST', $idoklad_payload, true);
             
-            if (get_option('idoklad_debug_mode')) {
-                error_log('iDoklad API: Received invoice created successfully with ID: ' . (isset($response['Id']) ? $response['Id'] : 'unknown'));
-            }
+            error_log('iDoklad API: Received invoice created successfully with ID: ' . (isset($response['Id']) ? $response['Id'] : 'unknown'));
             
             return $response;
             
@@ -282,32 +270,18 @@ class IDokladProcessor_IDokladAPI {
     }
     
     /**
-     * Create invoice from extracted data
-     * Note: This creates a RECEIVED invoice (expense) - use create_issued_invoice for invoices you send out
+     * Create invoice from transformed iDoklad payload
+     * Note: This accepts already-transformed data from the DataTransformer
      */
-    public function create_invoice($extracted_data) {
-        if (get_option('idoklad_debug_mode')) {
-            error_log('iDoklad API: Creating received invoice (expense) with data: ' . json_encode($extracted_data));
-        }
+    public function create_invoice($idoklad_payload) {
+        error_log('iDoklad API: Creating received invoice with payload: ' . json_encode($idoklad_payload, JSON_PRETTY_PRINT));
         
         try {
-            // For received invoices, use the ReceivedInvoices endpoint
-            // This is for invoices you RECEIVE from suppliers
-            $supplier_id = $this->get_or_create_supplier($extracted_data);
+            // The payload is already in iDoklad format from the DataTransformer
+            // Just send it to the API
+            $response = $this->make_api_request('/ReceivedInvoices', 'POST', $idoklad_payload);
             
-            // Build received invoice data
-            $invoice_data = $this->build_received_invoice_data($extracted_data, $supplier_id);
-            
-            if (get_option('idoklad_debug_mode')) {
-                error_log('iDoklad API: Sending payload: ' . json_encode($invoice_data, JSON_PRETTY_PRINT));
-            }
-            
-            // Create received invoice
-            $response = $this->make_api_request('/ReceivedInvoices', 'POST', $invoice_data);
-            
-            if (get_option('idoklad_debug_mode')) {
-                error_log('iDoklad API: Received invoice created successfully with ID: ' . (isset($response['Id']) ? $response['Id'] : 'unknown'));
-            }
+            error_log('iDoklad API: Received invoice created successfully with ID: ' . (isset($response['Id']) ? $response['Id'] : 'unknown'));
             
             return $response;
             

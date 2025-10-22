@@ -19,7 +19,9 @@ class IDokladProcessor_PDFCoProcessor {
     }
     
     /**
-     * Extract text from PDF using PDF.co
+     * Extract text from PDF using PDF.co (following official documentation)
+     * Step 1: Upload file via /v1/file/upload
+     * Step 2: Use returned URL in /v1/pdf/convert/to/text
      */
     public function extract_text($pdf_path, $queue_id = null) {
         if (!file_exists($pdf_path)) {
@@ -39,15 +41,15 @@ class IDokladProcessor_PDFCoProcessor {
         }
         
         try {
-            // First, upload the file to PDF.co
-            $uploaded_url = $this->upload_file($pdf_path);
+            // Step 1: Upload file and get URL (per official docs)
+            $file_url = $this->upload_file($pdf_path);
             
             if ($queue_id) {
-                IDokladProcessor_Database::add_queue_step($queue_id, 'PDF.co: File uploaded successfully', array('url' => $uploaded_url), false);
+                IDokladProcessor_Database::add_queue_step($queue_id, 'PDF.co: File uploaded successfully', null, false);
             }
             
-            // Try text extraction first (faster)
-            $text = $this->extract_text_from_url($uploaded_url);
+            // Step 2: Extract text using the URL
+            $text = $this->extract_text_from_url($file_url);
             
             // If text is too short, it might be a scanned PDF - use OCR
             if (strlen(trim($text)) < 100) {
@@ -59,7 +61,7 @@ class IDokladProcessor_PDFCoProcessor {
                     IDokladProcessor_Database::add_queue_step($queue_id, 'PDF.co: Minimal text found, switching to OCR', array('text_length' => strlen($text)), false);
                 }
                 
-                $text = $this->ocr_pdf_from_url($uploaded_url);
+                $text = $this->ocr_pdf_from_url($file_url);
             }
             
             if (empty($text)) {
@@ -86,74 +88,60 @@ class IDokladProcessor_PDFCoProcessor {
     }
     
     /**
-     * Upload file to PDF.co temporary storage
+     * Upload file to PDF.co using official documented method
+     * Per docs: POST to /v1/file/upload with multipart/form-data
      */
     private function upload_file($file_path) {
-        $url = $this->api_url . '/file/upload/get-presigned-url';
+        $url = 'https://api.pdf.co/v1/file/upload';
         
-        // Get file info
+        $boundary = wp_generate_password(24, false);
+        $file_content = file_get_contents($file_path);
         $file_name = basename($file_path);
         
-        // Request presigned URL
+        // Build multipart/form-data body per PDF.co docs
+        $body = '';
+        $body .= '--' . $boundary . "\r\n";
+        $body .= 'Content-Disposition: form-data; name="file"; filename="' . $file_name . '"' . "\r\n";
+        $body .= 'Content-Type: application/pdf' . "\r\n\r\n";
+        $body .= $file_content . "\r\n";
+        $body .= '--' . $boundary . '--';
+        
         $response = wp_remote_post($url, array(
             'headers' => array(
                 'x-api-key' => $this->api_key,
-                'Content-Type' => 'application/json'
+                'Content-Type' => 'multipart/form-data; boundary=' . $boundary
             ),
-            'body' => json_encode(array(
-                'name' => $file_name,
-                'contenttype' => 'application/pdf'
-            )),
+            'body' => $body,
             'timeout' => 30
         ));
         
         if (is_wp_error($response)) {
-            throw new Exception('PDF.co upload request failed: ' . $response->get_error_message());
+            throw new Exception('PDF.co upload failed: ' . $response->get_error_message());
         }
         
         $response_code = wp_remote_retrieve_response_code($response);
         $response_body = wp_remote_retrieve_body($response);
         $data = json_decode($response_body, true);
         
-        if ($response_code !== 200 || !isset($data['presignedUrl'])) {
-            throw new Exception('PDF.co upload URL request failed: ' . ($data['message'] ?? $response_body));
-        }
-        
-        // Upload file to presigned URL
-        $file_content = file_get_contents($file_path);
-        
-        $upload_response = wp_remote_request($data['presignedUrl'], array(
-            'method' => 'PUT',
-            'headers' => array(
-                'Content-Type' => 'application/pdf',
-                'Content-Length' => strlen($file_content)
-            ),
-            'body' => $file_content,
-            'timeout' => 60
-        ));
-        
-        if (is_wp_error($upload_response)) {
-            throw new Exception('PDF.co file upload failed: ' . $upload_response->get_error_message());
-        }
-        
-        $upload_code = wp_remote_retrieve_response_code($upload_response);
-        
-        if ($upload_code !== 200) {
-            throw new Exception('PDF.co file upload failed with status: ' . $upload_code);
-        }
-        
         if (get_option('idoklad_debug_mode')) {
-            error_log('iDoklad PDF.co: File uploaded successfully to ' . $data['url']);
+            error_log('iDoklad PDF.co: Upload response: ' . $response_body);
+        }
+        
+        if ($response_code !== 200 || empty($data['url'])) {
+            $error_msg = isset($data['message']) ? $data['message'] : 'Upload failed';
+            throw new Exception('PDF.co upload failed: ' . $error_msg);
         }
         
         return $data['url'];
     }
     
     /**
-     * Extract text from PDF URL using PDF.co
+     * Extract text from uploaded PDF URL
+     * Per docs: POST to /v1/pdf/convert/to/text with url parameter
+     * Set inline=true to get text in 'body' field instead of download URL
      */
     private function extract_text_from_url($pdf_url) {
-        $url = $this->api_url . '/pdf/convert/to/text';
+        $url = 'https://api.pdf.co/v1/pdf/convert/to/text';
         
         $response = wp_remote_post($url, array(
             'headers' => array(
@@ -162,14 +150,13 @@ class IDokladProcessor_PDFCoProcessor {
             ),
             'body' => json_encode(array(
                 'url' => $pdf_url,
-                'inline' => true,
-                'async' => false
+                'inline' => true  // Return text in 'body' field per documentation
             )),
             'timeout' => 120
         ));
         
         if (is_wp_error($response)) {
-            throw new Exception('PDF.co text extraction request failed: ' . $response->get_error_message());
+            throw new Exception('PDF.co text extraction failed: ' . $response->get_error_message());
         }
         
         $response_code = wp_remote_retrieve_response_code($response);
@@ -181,21 +168,29 @@ class IDokladProcessor_PDFCoProcessor {
         }
         
         if ($response_code !== 200) {
-            throw new Exception('PDF.co text extraction failed: ' . ($data['message'] ?? $response_body));
+            $error_msg = isset($data['message']) ? $data['message'] : $response_body;
+            throw new Exception('PDF.co text extraction failed: ' . $error_msg);
+        }
+        
+        // Per documentation: check 'error' field first, then get 'body' field
+        if (isset($data['error']) && $data['error'] !== false) {
+            $error_msg = isset($data['message']) ? $data['message'] : 'Unknown error';
+            throw new Exception('PDF.co returned error: ' . $error_msg);
         }
         
         if (!isset($data['body'])) {
-            throw new Exception('PDF.co returned no text content');
+            throw new Exception('PDF.co response missing body field');
         }
         
         return $data['body'];
     }
     
     /**
-     * OCR PDF from URL using PDF.co
+     * OCR PDF from uploaded URL
+     * Per docs: Same endpoint with OCREnabled parameter and inline=true
      */
     private function ocr_pdf_from_url($pdf_url) {
-        $url = $this->api_url . '/pdf/convert/to/text';
+        $url = 'https://api.pdf.co/v1/pdf/convert/to/text';
         
         $response = wp_remote_post($url, array(
             'headers' => array(
@@ -204,16 +199,15 @@ class IDokladProcessor_PDFCoProcessor {
             ),
             'body' => json_encode(array(
                 'url' => $pdf_url,
-                'inline' => true,
-                'async' => false,
-                'ocrLanguages' => 'ces,eng', // Czech and English
-                'enableOCR' => true
+                'inline' => true,  // Return text in 'body' field per documentation
+                'OCREnabled' => true,
+                'lang' => 'ces'  // Czech language per documentation (use 'lang' not 'ocrLanguages')
             )),
-            'timeout' => 180 // OCR can take longer
+            'timeout' => 180
         ));
         
         if (is_wp_error($response)) {
-            throw new Exception('PDF.co OCR request failed: ' . $response->get_error_message());
+            throw new Exception('PDF.co OCR failed: ' . $response->get_error_message());
         }
         
         $response_code = wp_remote_retrieve_response_code($response);
@@ -221,15 +215,22 @@ class IDokladProcessor_PDFCoProcessor {
         $data = json_decode($response_body, true);
         
         if (get_option('idoklad_debug_mode')) {
-            error_log('iDoklad PDF.co: OCR response: ' . substr($response_body, 0, 500));
+            error_log('iDoklad PDF.co: OCR response: ' . $response_body);
         }
         
         if ($response_code !== 200) {
-            throw new Exception('PDF.co OCR failed: ' . ($data['message'] ?? $response_body));
+            $error_msg = isset($data['message']) ? $data['message'] : $response_body;
+            throw new Exception('PDF.co OCR failed: ' . $error_msg);
+        }
+        
+        // Per documentation: check 'error' field first, then get 'body' field
+        if (isset($data['error']) && $data['error'] !== false) {
+            $error_msg = isset($data['message']) ? $data['message'] : 'Unknown error';
+            throw new Exception('PDF.co OCR returned error: ' . $error_msg);
         }
         
         if (!isset($data['body'])) {
-            throw new Exception('PDF.co OCR returned no text content');
+            throw new Exception('PDF.co OCR response missing body field');
         }
         
         return $data['body'];
@@ -289,7 +290,7 @@ class IDokladProcessor_PDFCoProcessor {
     }
     
     /**
-     * Test PDF.co connection
+     * Test PDF.co connection (simple ping test)
      */
     public function test_connection() {
         if (empty($this->api_key)) {
@@ -300,13 +301,21 @@ class IDokladProcessor_PDFCoProcessor {
         }
         
         try {
-            // Test API key by checking account info
-            $url = $this->api_url . '/account/credit-balance';
+            // Simple test: try to extract text from a small base64 PDF
+            // Create minimal PDF in base64
+            $minimal_pdf_base64 = 'JVBERi0xLjQKJeLjz9MKNCAwIG9iago8PC9UeXBlL1BhZ2UvUGFyZW50IDMgMCBSL01lZGlhQm94WzAgMCA2MTIgNzkyXS9Db250ZW50cyA1IDAgUj4+CmVuZG9iago1IDAgb2JqCjw8L0xlbmd0aCA0OD4+CnN0cmVhbQpCVAovRjEgMTIgVGYKNzAgNzAwIFRkCihUZXN0KSBUagpFVAplbmRzdHJlYW0KZW5kb2JqCjEgMCBvYmoKPDwvVHlwZS9Gb250L1N1YnR5cGUvVHlwZTEvQmFzZUZvbnQvVGltZXMtUm9tYW4+PgplbmRvYmoKMiAwIG9iago8PC9UeXBlL0NhdGFsb2cvUGFnZXMgMyAwIFI+PgplbmRvYmoKMyAwIG9iago8PC9UeXBlL1BhZ2VzL0tpZHNbNCAwIFJdL0NvdW50IDE+PgplbmRvYmoKeHJlZgowIDYKMDAwMDAwMDAwMCA2NTUzNSBmIAowMDAwMDAwMjUxIDAwMDAwIG4gCjAwMDAwMDAzMjIgMDAwMDAgbiAKMDAwMDAwMDM3MSAwMDAwMCBuIAowMDAwMDAwMDE1IDAwMDAwIG4gCjAwMDAwMDAxMTEgMDAwMDAgbiAKdHJhaWxlcgo8PC9TaXplIDYvUm9vdCAyIDAgUj4+CnN0YXJ0eHJlZgo0MjgKJSVFT0Y=';
             
-            $response = wp_remote_get($url, array(
+            $url = $this->api_url . '/pdf/convert/to/text';
+            
+            $response = wp_remote_post($url, array(
                 'headers' => array(
-                    'x-api-key' => $this->api_key
+                    'x-api-key' => $this->api_key,
+                    'Content-Type' => 'application/json'
                 ),
+                'body' => json_encode(array(
+                    'file' => $minimal_pdf_base64,
+                    'inline' => true
+                )),
                 'timeout' => 15
             ));
             
@@ -321,17 +330,24 @@ class IDokladProcessor_PDFCoProcessor {
             $response_body = wp_remote_retrieve_body($response);
             $data = json_decode($response_body, true);
             
+            if (get_option('idoklad_debug_mode')) {
+                error_log('PDF.co test response code: ' . $response_code);
+            }
+            
             if ($response_code === 200) {
-                $credits = isset($data['credits']) ? $data['credits'] : 'Unknown';
                 return array(
                     'success' => true,
-                    'message' => 'Connection successful! Available credits: ' . $credits,
-                    'credits' => $credits
+                    'message' => 'Connection successful! PDF.co API is working.'
+                );
+            } elseif ($response_code === 401 || $response_code === 403) {
+                return array(
+                    'success' => false,
+                    'message' => 'Invalid API key. Please check your PDF.co API key.'
                 );
             } else {
                 return array(
                     'success' => false,
-                    'message' => 'API key invalid or API error: ' . ($data['message'] ?? $response_body)
+                    'message' => 'API test failed (' . $response_code . '): ' . ($data['message'] ?? 'Unknown error')
                 );
             }
             

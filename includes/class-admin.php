@@ -36,10 +36,17 @@ class IDokladProcessor_Admin {
         add_action('wp_ajax_idoklad_test_idoklad_payload', array($this, 'test_idoklad_payload'));
         add_action('wp_ajax_idoklad_get_parsing_methods', array($this, 'get_parsing_methods'));
         add_action('wp_ajax_idoklad_test_pdfco', array($this, 'test_pdfco_connection'));
+        add_action('wp_ajax_idoklad_test_ai_parser', array($this, 'test_ai_parser'));
         
         // Dashboard AJAX handlers
         add_action('wp_ajax_idoklad_force_email_check', array($this, 'force_email_check'));
         add_action('wp_ajax_idoklad_cancel_queue_item', array($this, 'cancel_queue_item'));
+        
+        // Database Management AJAX handlers
+        add_action('wp_ajax_idoklad_get_db_stats', array($this, 'get_database_stats'));
+        add_action('wp_ajax_idoklad_cleanup_old_logs', array($this, 'cleanup_old_logs'));
+        add_action('wp_ajax_idoklad_cleanup_old_queue', array($this, 'cleanup_old_queue'));
+        add_action('wp_ajax_idoklad_cleanup_attachments', array($this, 'cleanup_old_attachments'));
     }
     
     /**
@@ -109,6 +116,15 @@ class IDokladProcessor_Admin {
             'idoklad-processor-diagnostics',
             array($this, 'diagnostics_page')
         );
+        
+        add_submenu_page(
+            'idoklad-processor',
+            __('Database Management', 'idoklad-invoice-processor'),
+            __('Database Management', 'idoklad-invoice-processor'),
+            'manage_options',
+            'idoklad-processor-database',
+            array($this, 'database_management_page')
+        );
     }
     
     /**
@@ -135,6 +151,7 @@ class IDokladProcessor_Admin {
         // PDF.co settings (PRIMARY)
         register_setting('idoklad_pdfco_settings', 'idoklad_use_pdfco');
         register_setting('idoklad_pdfco_settings', 'idoklad_pdfco_api_key');
+        register_setting('idoklad_pdfco_settings', 'idoklad_use_ai_parser');
         
         // PDF processing settings (FALLBACK)
         register_setting('idoklad_pdf_settings', 'idoklad_use_native_parser_first');
@@ -244,6 +261,13 @@ class IDokladProcessor_Admin {
     }
     
     /**
+     * Database Management page
+     */
+    public function database_management_page() {
+        include IDOKLAD_PROCESSOR_PLUGIN_DIR . 'templates/admin-database.php';
+    }
+    
+    /**
      * Save settings
      */
     private function save_settings() {
@@ -260,6 +284,12 @@ class IDokladProcessor_Admin {
         
         if (isset($_POST['pdfco_api_key'])) {
             update_option('idoklad_pdfco_api_key', sanitize_text_field($_POST['pdfco_api_key']));
+        }
+        
+        if (isset($_POST['use_ai_parser'])) {
+            update_option('idoklad_use_ai_parser', 1);
+        } else {
+            update_option('idoklad_use_ai_parser', 0);
         }
         
         // Save email settings
@@ -786,14 +816,8 @@ class IDokladProcessor_Admin {
             wp_die(__('Insufficient permissions', 'idoklad-invoice-processor'));
         }
         
-        $zapier = new IDokladProcessor_ZapierIntegration();
-        $result = $zapier->test_webhook();
-        
-        if ($result['success']) {
-            wp_send_json_success($result['message']);
-        } else {
-            wp_send_json_error($result['message']);
-        }
+        // Zapier integration is no longer used
+        wp_send_json_error('Zapier testing is deprecated. The system now uses direct PDF text parsing with PDF.co.');
     }
     
     /**
@@ -835,7 +859,9 @@ class IDokladProcessor_Admin {
             return;
         }
         
-        require_once IDOKLAD_PROCESSOR_PLUGIN_DIR . 'includes/class-ocr-processor.php';
+        // OCR.space is no longer used - PDF.co handles OCR
+        wp_send_json_error('OCR.space testing is deprecated. PDF.co handles all OCR automatically.');
+        return;
         
         try {
             // Test OCR.space API directly
@@ -1143,9 +1169,12 @@ class IDokladProcessor_Admin {
         
         $temp_path = $file['tmp_name'];
         
+        // OCR testing is deprecated - PDF.co handles OCR automatically
+        wp_send_json_error('OCR testing is no longer available. PDF.co handles all OCR automatically.');
+        return;
+        
         try {
-            require_once IDOKLAD_PROCESSOR_PLUGIN_DIR . 'includes/class-ocr-processor.php';
-            $ocr_processor = new IDokladProcessor_OCRProcessor();
+            // OCR testing deprecated
             
             // Enable debug for this test
             $original_debug = get_option('idoklad_debug_mode');
@@ -1191,10 +1220,8 @@ class IDokladProcessor_Admin {
                 update_option('idoklad_debug_mode', $original_debug);
             }
             
-            // Get diagnostics
-            require_once IDOKLAD_PROCESSOR_PLUGIN_DIR . 'includes/class-ocr-processor.php';
-            $ocr_processor = new IDokladProcessor_OCRProcessor();
-            $methods = $ocr_processor->test_ocr_methods();
+            // Get diagnostics (OCR is now handled by PDF.co)
+            $methods = array();
             
             // Build detailed error message
             $error_details = array();
@@ -1306,9 +1333,12 @@ class IDokladProcessor_Admin {
             wp_send_json_error(__('No text provided', 'idoklad-invoice-processor'));
         }
         
+        // Zapier is no longer used - we parse directly
+        wp_send_json_error('Zapier testing is deprecated. The system now uses direct PDF text parsing.');
+        return;
+        
         try {
-            require_once IDOKLAD_PROCESSOR_PLUGIN_DIR . 'includes/class-zapier-integration.php';
-            $zapier = new IDokladProcessor_ZapierIntegration();
+            // Zapier testing deprecated
             
             $email_data = array(
                 'email_from' => 'test@example.com',
@@ -1317,7 +1347,7 @@ class IDokladProcessor_Admin {
             );
             
             $start_time = microtime(true);
-            $response = $zapier->process_invoice($pdf_text, $email_data);
+            $response = array();
             $end_time = microtime(true);
             $request_time = round(($end_time - $start_time) * 1000, 2);
             
@@ -1463,6 +1493,32 @@ class IDokladProcessor_Admin {
     }
     
     /**
+     * Test AI Parser (AJAX)
+     */
+    public function test_ai_parser() {
+        check_ajax_referer('idoklad_admin_nonce', 'nonce');
+        
+        if (!current_user_can('manage_options')) {
+            wp_die(__('Insufficient permissions', 'idoklad-invoice-processor'));
+        }
+        
+        try {
+            require_once IDOKLAD_PROCESSOR_PLUGIN_DIR . 'includes/class-pdf-co-ai-parser.php';
+            $ai_parser = new IDokladProcessor_PDFCoAIParser();
+            $result = $ai_parser->test_connection();
+            
+            if ($result['success']) {
+                wp_send_json_success($result);
+            } else {
+                wp_send_json_error($result['message']);
+            }
+            
+        } catch (Exception $e) {
+            wp_send_json_error(__('AI Parser test failed: ', 'idoklad-invoice-processor') . $e->getMessage());
+        }
+    }
+    
+    /**
      * Force email check (AJAX)
      */
     public function force_email_check() {
@@ -1476,11 +1532,23 @@ class IDokladProcessor_Admin {
             require_once IDOKLAD_PROCESSOR_PLUGIN_DIR . 'includes/class-email-monitor.php';
             $email_monitor = new IDokladProcessor_EmailMonitor();
             
-            // Fetch new emails
-            $new_emails = $email_monitor->fetch_emails();
+            if (get_option('idoklad_debug_mode')) {
+                error_log('iDoklad: Force email check initiated');
+            }
             
-            // Process pending emails
+            // Check for new emails (this adds them to the queue)
+            $new_emails = $email_monitor->check_for_new_emails();
+            
+            if (get_option('idoklad_debug_mode')) {
+                error_log('iDoklad: Found ' . $new_emails . ' new emails');
+            }
+            
+            // Process pending emails from queue
             $processed = $email_monitor->process_pending_emails();
+            
+            if (get_option('idoklad_debug_mode')) {
+                error_log('iDoklad: Processed ' . $processed . ' items');
+            }
             
             wp_send_json_success(array(
                 'message' => sprintf(
@@ -1493,7 +1561,18 @@ class IDokladProcessor_Admin {
             ));
             
         } catch (Exception $e) {
-            wp_send_json_error(__('Email check failed: ', 'idoklad-invoice-processor') . $e->getMessage());
+            if (get_option('idoklad_debug_mode')) {
+                error_log('iDoklad: Email check error: ' . $e->getMessage());
+                error_log('iDoklad: Stack trace: ' . $e->getTraceAsString());
+            }
+            wp_send_json_error('Email check failed: ' . $e->getMessage());
+        } catch (Error $e) {
+            // Catch fatal errors
+            if (get_option('idoklad_debug_mode')) {
+                error_log('iDoklad: Fatal email check error: ' . $e->getMessage());
+                error_log('iDoklad: Stack trace: ' . $e->getTraceAsString());
+            }
+            wp_send_json_error('Email check failed (fatal error): ' . $e->getMessage());
         }
     }
     
@@ -1546,5 +1625,175 @@ class IDokladProcessor_Admin {
         } else {
             wp_send_json_error(__('Failed to cancel queue item', 'idoklad-invoice-processor'));
         }
+    }
+    
+    /**
+     * Get database statistics (AJAX)
+     */
+    public function get_database_stats() {
+        check_ajax_referer('idoklad_admin_nonce', 'nonce');
+        
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Insufficient permissions');
+        }
+        
+        global $wpdb;
+        
+        // Get counts
+        $logs_table = $wpdb->prefix . 'idoklad_logs';
+        $queue_table = $wpdb->prefix . 'idoklad_queue';
+        
+        $total_logs = $wpdb->get_var("SELECT COUNT(*) FROM $logs_table");
+        $logs_30_days = $wpdb->get_var("SELECT COUNT(*) FROM $logs_table WHERE created_at < DATE_SUB(NOW(), INTERVAL 30 DAY)");
+        $logs_90_days = $wpdb->get_var("SELECT COUNT(*) FROM $logs_table WHERE created_at < DATE_SUB(NOW(), INTERVAL 90 DAY)");
+        
+        $total_queue = $wpdb->get_var("SELECT COUNT(*) FROM $queue_table");
+        $queue_30_days = $wpdb->get_var("SELECT COUNT(*) FROM $queue_table WHERE created_at < DATE_SUB(NOW(), INTERVAL 30 DAY)");
+        $queue_completed = $wpdb->get_var("SELECT COUNT(*) FROM $queue_table WHERE status = 'completed'");
+        $queue_failed = $wpdb->get_var("SELECT COUNT(*) FROM $queue_table WHERE status = 'failed'");
+        
+        // Get attachment stats
+        $upload_dir = wp_upload_dir();
+        $attachments_dir = $upload_dir['basedir'] . '/idoklad-attachments';
+        
+        $attachment_count = 0;
+        $attachment_size = 0;
+        
+        if (file_exists($attachments_dir)) {
+            $files = glob($attachments_dir . '/*');
+            $attachment_count = count($files);
+            
+            foreach ($files as $file) {
+                if (is_file($file)) {
+                    $attachment_size += filesize($file);
+                }
+            }
+        }
+        
+        wp_send_json_success(array(
+            'logs' => array(
+                'total' => $total_logs,
+                'older_than_30_days' => $logs_30_days,
+                'older_than_90_days' => $logs_90_days
+            ),
+            'queue' => array(
+                'total' => $total_queue,
+                'older_than_30_days' => $queue_30_days,
+                'completed' => $queue_completed,
+                'failed' => $queue_failed
+            ),
+            'attachments' => array(
+                'count' => $attachment_count,
+                'size_mb' => round($attachment_size / 1024 / 1024, 2)
+            )
+        ));
+    }
+    
+    /**
+     * Cleanup old logs (AJAX)
+     */
+    public function cleanup_old_logs() {
+        check_ajax_referer('idoklad_admin_nonce', 'nonce');
+        
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Insufficient permissions');
+        }
+        
+        $days = intval($_POST['days']);
+        if ($days < 7) {
+            wp_send_json_error('Minimum 7 days required');
+        }
+        
+        global $wpdb;
+        $table = $wpdb->prefix . 'idoklad_logs';
+        
+        $deleted = $wpdb->query($wpdb->prepare(
+            "DELETE FROM $table WHERE created_at < DATE_SUB(NOW(), INTERVAL %d DAY)",
+            $days
+        ));
+        
+        wp_send_json_success(array(
+            'deleted' => $deleted,
+            'message' => sprintf(__('Deleted %d log entries older than %d days', 'idoklad-invoice-processor'), $deleted, $days)
+        ));
+    }
+    
+    /**
+     * Cleanup old queue items (AJAX)
+     */
+    public function cleanup_old_queue() {
+        check_ajax_referer('idoklad_admin_nonce', 'nonce');
+        
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Insufficient permissions');
+        }
+        
+        $days = intval($_POST['days']);
+        $status = sanitize_text_field($_POST['status'] ?? 'completed');
+        
+        if ($days < 7) {
+            wp_send_json_error('Minimum 7 days required');
+        }
+        
+        global $wpdb;
+        $table = $wpdb->prefix . 'idoklad_queue';
+        
+        $where = $wpdb->prepare("created_at < DATE_SUB(NOW(), INTERVAL %d DAY)", $days);
+        
+        if ($status !== 'all') {
+            $where .= $wpdb->prepare(" AND status = %s", $status);
+        }
+        
+        $deleted = $wpdb->query("DELETE FROM $table WHERE $where");
+        
+        wp_send_json_success(array(
+            'deleted' => $deleted,
+            'message' => sprintf(__('Deleted %d queue items', 'idoklad-invoice-processor'), $deleted)
+        ));
+    }
+    
+    /**
+     * Cleanup old attachments (AJAX)
+     */
+    public function cleanup_old_attachments() {
+        check_ajax_referer('idoklad_admin_nonce', 'nonce');
+        
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Insufficient permissions');
+        }
+        
+        $days = intval($_POST['days']);
+        if ($days < 7) {
+            wp_send_json_error('Minimum 7 days required');
+        }
+        
+        $upload_dir = wp_upload_dir();
+        $attachments_dir = $upload_dir['basedir'] . '/idoklad-attachments';
+        
+        if (!file_exists($attachments_dir)) {
+            wp_send_json_success(array(
+                'deleted' => 0,
+                'message' => __('No attachments directory found', 'idoklad-invoice-processor')
+            ));
+        }
+        
+        $cutoff_time = time() - ($days * 24 * 60 * 60);
+        $files = glob($attachments_dir . '/*');
+        $deleted_count = 0;
+        $freed_space = 0;
+        
+        foreach ($files as $file) {
+            if (is_file($file) && filemtime($file) < $cutoff_time) {
+                $freed_space += filesize($file);
+                unlink($file);
+                $deleted_count++;
+            }
+        }
+        
+        wp_send_json_success(array(
+            'deleted' => $deleted_count,
+            'freed_mb' => round($freed_space / 1024 / 1024, 2),
+            'message' => sprintf(__('Deleted %d attachments, freed %.2f MB', 'idoklad-invoice-processor'), $deleted_count, round($freed_space / 1024 / 1024, 2))
+        ));
     }
 }
