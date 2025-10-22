@@ -73,7 +73,12 @@ class IDokladProcessor_PDFCoAIParser {
         
         // Add custom fields if provided
         if (!empty($custom_fields)) {
-            $data['customfield'] = json_encode($custom_fields);
+            $customfield_payload = $this->build_customfield_payload($custom_fields);
+
+            if (!empty($customfield_payload)) {
+                $data['customfield'] = $customfield_payload;
+                $data['customfields'] = $customfield_payload;
+            }
         }
         
         $args = array(
@@ -229,69 +234,124 @@ class IDokladProcessor_PDFCoAIParser {
     
     /**
      * Prepare iDoklad-formatted data from AI Parser response
-     * Since we're using iDoklad custom fields, the data should already be in the correct format
      */
     private function prepare_idoklad_data($parsed_data) {
-        // The AI parser should return data in iDoklad format due to custom fields
-        // We just need to ensure required fields are present and add metadata
-        
-        $idoklad_data = $parsed_data;
-        
-        // Ensure required fields have default values if missing
-        if (!isset($idoklad_data['DocumentSerialNumber'])) {
-            $idoklad_data['DocumentSerialNumber'] = 1;
-        }
-        
-        if (!isset($idoklad_data['IsIncomeTax'])) {
-            $idoklad_data['IsIncomeTax'] = false;
-        }
-        
-        if (!isset($idoklad_data['PartnerId'])) {
-            $idoklad_data['PartnerId'] = 0; // Will create new partner
-        }
-        
-        if (!isset($idoklad_data['ExchangeRate'])) {
-            $idoklad_data['ExchangeRate'] = 1;
-        }
-        
-        if (!isset($idoklad_data['ExchangeRateAmount'])) {
-            $idoklad_data['ExchangeRateAmount'] = 1;
-        }
-        
-        if (!isset($idoklad_data['PaymentStatus'])) {
-            $idoklad_data['PaymentStatus'] = 0; // Unpaid
-        }
-        
-        if (!isset($idoklad_data['PaymentOptionId'])) {
-            $idoklad_data['PaymentOptionId'] = 1; // Bank transfer
-        }
-        
-        if (!isset($idoklad_data['CurrencyId'])) {
-            $idoklad_data['CurrencyId'] = 1; // CZK
-        }
-        
-        // Ensure Items array exists
-        if (!isset($idoklad_data['Items']) || !is_array($idoklad_data['Items'])) {
-            $idoklad_data['Items'] = array();
-        }
-        
-        // Ensure Description exists (required by iDoklad)
-        if (empty($idoklad_data['Description'])) {
-            $supplier = $idoklad_data['PartnerName'] ?? 'Neznámý dodavatel';
-            $invoice_number = $idoklad_data['DocumentNumber'] ?? 'N/A';
-            $idoklad_data['Description'] = 'Faktura od ' . $supplier . ' č. ' . $invoice_number;
-        }
-        
+        $idoklad_data = $this->normalize_idoklad_payload($parsed_data);
+
         // Add metadata
         $idoklad_data['ai_parsed'] = true;
         $idoklad_data['parser_source'] = 'pdf_co_ai_idoklad';
         $idoklad_data['parsed_at'] = date('Y-m-d H:i:s');
-        
+
+        if (!empty($parsed_data)) {
+            $idoklad_data['ai_parser_raw'] = $parsed_data;
+        }
+
         if (get_option('idoklad_debug_mode')) {
             error_log('PDF.co AI Parser: Prepared iDoklad data: ' . json_encode($idoklad_data, JSON_PRETTY_PRINT));
         }
-        
+
         return $idoklad_data;
+    }
+
+    /**
+     * Convert the parser response into the format expected by the iDoklad API integration
+     */
+    private function normalize_idoklad_payload($parsed_data) {
+        $source_data = $parsed_data;
+
+        if (isset($parsed_data['Data']) && is_array($parsed_data['Data'])) {
+            $source_data = $parsed_data['Data'];
+        }
+
+        $contact = isset($source_data['Contact']) && is_array($source_data['Contact']) ? $source_data['Contact'] : array();
+        $bank_account = array();
+        if (isset($source_data['BankAccounts']) && is_array($source_data['BankAccounts']) && count($source_data['BankAccounts']) > 0) {
+            $bank_account = $source_data['BankAccounts'][0];
+        }
+
+        $items_source = array();
+        if (isset($source_data['Items']) && is_array($source_data['Items'])) {
+            $items_source = $source_data['Items'];
+        } elseif (isset($source_data['items']) && is_array($source_data['items'])) {
+            $items_source = $source_data['items'];
+        }
+
+        $normalized_items = $this->normalize_items($items_source);
+        $idoklad_items = $this->build_idoklad_items($normalized_items, $source_data);
+
+        $document_number = $this->find_field_value($source_data, array('DocumentNumber', 'documentNumber', 'InvoiceNumber', 'invoiceNumber', 'Number', 'number'));
+        if (empty($document_number)) {
+            $document_number = 'AI-' . date('Ymd-His');
+        }
+
+        $description = $this->find_field_value($source_data, array('Description', 'description', 'Name', 'name'));
+        if (empty($description)) {
+            $supplier = $this->find_field_value($source_data, array('PartnerName', 'partnerName', 'Name', 'name')) ?: 'Neznámý dodavatel';
+            $description = 'Faktura od ' . $supplier . ' č. ' . $document_number;
+        }
+
+        $partner_name = $this->find_field_value($source_data, array('PartnerName', 'partnerName', 'Name', 'name'));
+        if (empty($partner_name) && isset($contact['Name'])) {
+            $partner_name = $contact['Name'];
+        }
+
+        $currency_id = $this->find_field_value($source_data, array('CurrencyId', 'currencyId', 'DefaultCurrencyId', 'defaultCurrencyId'));
+        if (empty($currency_id)) {
+            $currency_id = 1;
+        }
+
+        $date_of_issue = $this->normalize_date($this->find_field_value($source_data, array('DateOfIssue', 'dateOfIssue', 'DateFrom', 'dateFrom')));
+        $date_of_receiving = $this->normalize_date($this->find_field_value($source_data, array('DateOfReceiving', 'dateOfReceiving', 'DateFrom', 'dateFrom')));
+        $date_of_taxing = $this->normalize_date($this->find_field_value($source_data, array('DateOfTaxing', 'dateOfTaxing', 'DateFrom', 'dateFrom')));
+        $date_of_maturity = $this->normalize_date($this->find_field_value($source_data, array('DateOfMaturity', 'dateOfMaturity', 'DateTo', 'dateTo')));
+
+        $partner_address = array();
+        if (!empty($contact)) {
+            $partner_address = $this->remove_empty_values(array(
+                'Street' => $contact['Street'] ?? null,
+                'City' => $contact['City'] ?? null,
+                'PostalCode' => $contact['PostalCode'] ?? null,
+                'CountryId' => $contact['CountryId'] ?? null,
+            ));
+        }
+
+        $bank_account_number = $this->find_field_value($bank_account, array('AccountNumber', 'accountNumber', 'BankAccountNumber', 'bankAccountNumber'));
+        $bank_account_id = $this->find_field_value($bank_account, array('Id', 'id', 'BankId', 'bankId'));
+        $iban = $this->find_field_value($bank_account, array('Iban', 'iban'));
+        $swift = $this->find_field_value($bank_account, array('Swift', 'swift', 'Bic', 'bic'));
+
+        $payload = array(
+            'DocumentNumber' => (string)$document_number,
+            'DocumentSerialNumber' => (int)$this->find_field_value($source_data, array('DocumentSerialNumber', 'documentSerialNumber', 'SerialNumber', 'serialNumber')) ?: 1,
+            'DateOfIssue' => $date_of_issue ?: date('Y-m-d'),
+            'DateOfReceiving' => $date_of_receiving ?: date('Y-m-d'),
+            'DateOfTaxing' => $date_of_taxing ?: date('Y-m-d'),
+            'DateOfMaturity' => $date_of_maturity ?: date('Y-m-d'),
+            'Description' => $description,
+            'IsIncomeTax' => (bool)$this->find_field_value($source_data, array('IsIncomeTax', 'isIncomeTax', 'HasIncomeTax', 'hasIncomeTax')),
+            'CurrencyId' => (int)$currency_id,
+            'ExchangeRate' => (float)$this->find_field_value($source_data, array('ExchangeRate', 'exchangeRate')) ?: 1,
+            'ExchangeRateAmount' => (float)$this->find_field_value($source_data, array('ExchangeRateAmount', 'exchangeRateAmount')) ?: 1,
+            'PartnerId' => (int)$this->find_field_value($source_data, array('PartnerId', 'partnerId', 'SupplierId', 'supplierId', 'ContactId', 'contactId')),
+            'PartnerName' => $partner_name,
+            'PartnerAddress' => !empty($partner_address) ? $partner_address : null,
+            'SupplierIdentificationNumber' => $this->find_field_value($source_data, array('SupplierIdentificationNumber', 'supplierIdentificationNumber', 'IdentificationNumber', 'identificationNumber', 'VatIdentificationNumber', 'vatIdentificationNumber')),
+            'PaymentOptionId' => (int)$this->find_field_value($source_data, array('PaymentOptionId', 'paymentOptionId')) ?: 1,
+            'PaymentStatus' => (int)$this->find_field_value($source_data, array('PaymentStatus', 'paymentStatus')),
+            'VariableSymbol' => $this->find_field_value($source_data, array('VariableSymbol', 'variableSymbol')),
+            'ConstantSymbol' => $this->find_field_value($source_data, array('ConstantSymbol', 'constantSymbol')),
+            'SpecificSymbol' => $this->find_field_value($source_data, array('SpecificSymbol', 'specificSymbol')),
+            'BankAccountNumber' => $bank_account_number,
+            'BankAccountId' => $bank_account_id,
+            'Iban' => $iban,
+            'Swift' => $swift,
+            'AccountNumber' => $this->find_field_value($source_data, array('AccountNumber', 'accountNumber')),
+            'Note' => $this->find_field_value($source_data, array('Note', 'note', 'Message', 'message')),
+            'Items' => $idoklad_items,
+        );
+
+        return $this->remove_empty_values($payload, false);
     }
     
     /**
@@ -311,7 +371,7 @@ class IDokladProcessor_PDFCoAIParser {
      */
     private function normalize_items($items) {
         $normalized_items = array();
-        
+
         foreach ($items as $item) {
             if (!is_array($item)) {
                 continue;
@@ -341,8 +401,165 @@ class IDokladProcessor_PDFCoAIParser {
                 $normalized_items[] = $normalized_item;
             }
         }
-        
+
         return $normalized_items;
+    }
+
+    /**
+     * Create iDoklad line items from normalized parser data
+     */
+    private function build_idoklad_items($normalized_items, $source_data) {
+        $items = array();
+
+        foreach ($normalized_items as $item) {
+            $unit_price = null;
+            if (isset($item['price'])) {
+                $unit_price = (float)$item['price'];
+            } elseif (isset($item['total']) && isset($item['quantity']) && (float)$item['quantity'] != 0) {
+                $unit_price = (float)$item['total'] / (float)$item['quantity'];
+            } elseif (isset($item['total'])) {
+                $unit_price = (float)$item['total'];
+            }
+
+            $items[] = $this->remove_empty_values(array(
+                'Name' => $item['name'] ?? 'Položka',
+                'Amount' => isset($item['quantity']) ? (float)$item['quantity'] : 1,
+                'Unit' => $item['unit'] ?? null,
+                'UnitPrice' => $unit_price,
+                'TotalWithoutVat' => isset($item['total']) ? (float)$item['total'] : null,
+                'PriceType' => isset($item['vat_rate']) ? ($this->map_vat_rate_type($item['vat_rate']) === 3 ? 0 : 1) : 0,
+                'VatRateType' => $this->map_vat_rate_type($item['vat_rate'] ?? null),
+            ));
+        }
+
+        if (empty($items)) {
+            $total_amount = $this->find_field_value($source_data, array('TotalWithVat', 'totalWithVat', 'TotalAmount', 'totalAmount', 'Total', 'total'));
+            if ($total_amount !== null) {
+                $items[] = array(
+                    'Name' => 'Celková částka',
+                    'Amount' => 1,
+                    'UnitPrice' => (float)$total_amount,
+                    'PriceType' => 1,
+                    'VatRateType' => 3,
+                );
+            }
+        }
+
+        return $items;
+    }
+
+    /**
+     * Convert value to Y-m-d format if possible
+     */
+    private function normalize_date($value) {
+        if (empty($value)) {
+            return null;
+        }
+
+        if ($value instanceof DateTime) {
+            return $value->format('Y-m-d');
+        }
+
+        if (is_numeric($value)) {
+            return date('Y-m-d', (int)$value);
+        }
+
+        $timestamp = strtotime($value);
+        if ($timestamp !== false) {
+            return date('Y-m-d', $timestamp);
+        }
+
+        return null;
+    }
+
+    /**
+     * Build comma-separated customfield payload
+     */
+    private function build_customfield_payload($custom_fields) {
+        if (is_string($custom_fields)) {
+            return trim($custom_fields);
+        }
+
+        if (!is_array($custom_fields)) {
+            return null;
+        }
+
+        $flattened = array();
+        foreach ($custom_fields as $field) {
+            if (is_string($field) && $field !== '') {
+                $flattened[] = $field;
+            }
+        }
+
+        if (empty($flattened)) {
+            return null;
+        }
+
+        return implode(',', array_unique($flattened));
+    }
+
+    /**
+     * Map VAT rates from parser output to iDoklad VatRateType enumeration
+     */
+    private function map_vat_rate_type($vat_rate) {
+        if ($vat_rate === null || $vat_rate === '') {
+            return 3;
+        }
+
+        $numeric_rate = is_numeric($vat_rate) ? (float)$vat_rate : null;
+
+        if ($numeric_rate === null) {
+            $vat_rate_str = strtolower((string)$vat_rate);
+            if (strpos($vat_rate_str, '21') !== false) {
+                return 0;
+            }
+            if (strpos($vat_rate_str, '15') !== false) {
+                return 1;
+            }
+            if (strpos($vat_rate_str, '10') !== false) {
+                return 2;
+            }
+            if (strpos($vat_rate_str, '0') !== false || strpos($vat_rate_str, 'zero') !== false) {
+                return 3;
+            }
+
+            return 3;
+        }
+
+        if ($numeric_rate >= 20) {
+            return 0;
+        }
+        if ($numeric_rate >= 14) {
+            return 1;
+        }
+        if ($numeric_rate > 0) {
+            return 2;
+        }
+
+        return 3;
+    }
+
+    /**
+     * Remove empty values from array (recursively optional)
+     */
+    private function remove_empty_values($array, $recursive = true) {
+        $filtered = array();
+
+        foreach ($array as $key => $value) {
+            if (is_array($value)) {
+                $clean_value = $recursive ? $this->remove_empty_values($value, $recursive) : array_filter($value, function($item) {
+                    return $item !== null && $item !== '' && $item !== false;
+                });
+
+                if (!empty($clean_value)) {
+                    $filtered[$key] = $clean_value;
+                }
+            } elseif ($value !== null && $value !== '' && $value !== false) {
+                $filtered[$key] = $value;
+            }
+        }
+
+        return $filtered;
     }
     
     /**
@@ -398,7 +615,6 @@ class IDokladProcessor_PDFCoAIParser {
             'allowEditExported',
             'bankStatementMail',
             'hasAutomaticPairPayments',
-            'accountNumber',
             'bankId',
             'countOfDecimalsForAmount',
             'countOfDecimalsForPrice',
