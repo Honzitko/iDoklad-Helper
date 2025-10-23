@@ -78,11 +78,16 @@ $queue_stats = $database->get_queue_statistics();
             
             <div class="automatic-controls">
                 <div class="control-buttons">
+                    <button type="button" id="toggle-automatic-processing" class="button <?php echo $automatic_processing ? 'button-secondary' : 'button-primary'; ?>" data-running="<?php echo $automatic_processing ? '1' : '0'; ?>">
+                        <span class="dashicons <?php echo $automatic_processing ? 'dashicons-controls-pause' : 'dashicons-controls-play'; ?>"></span>
+                        <?php echo $automatic_processing ? __('Disable Auto Email Processing', 'idoklad-invoice-processor') : __('Enable Auto Email Processing', 'idoklad-invoice-processor'); ?>
+                    </button>
+
                     <button type="button" id="start-automatic-processing" class="button button-primary">
                         <span class="dashicons dashicons-controls-play"></span>
                         <?php _e('Start Automatic Processing', 'idoklad-invoice-processor'); ?>
                     </button>
-                    
+
                     <button type="button" id="stop-automatic-processing" class="button button-secondary">
                         <span class="dashicons dashicons-controls-pause"></span>
                         <?php _e('Stop Automatic Processing', 'idoklad-invoice-processor'); ?>

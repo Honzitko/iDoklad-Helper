@@ -49,6 +49,7 @@ class IDokladProcessor_Admin {
         add_action('wp_ajax_idoklad_process_emails_manually', array($this, 'process_emails_manually'));
         add_action('wp_ajax_idoklad_start_automatic_processing', array($this, 'start_automatic_processing'));
         add_action('wp_ajax_idoklad_stop_automatic_processing', array($this, 'stop_automatic_processing'));
+        add_action('wp_ajax_idoklad_toggle_automatic_processing', array($this, 'toggle_automatic_processing'));
         add_action('wp_ajax_idoklad_get_processing_status', array($this, 'get_processing_status'));
         
         // Queue reprocessing AJAX handlers
@@ -2056,29 +2057,73 @@ class IDokladProcessor_Admin {
      */
     public function stop_automatic_processing() {
         check_ajax_referer('idoklad_admin_nonce', 'nonce');
-        
+
         if (!current_user_can('manage_options')) {
             wp_send_json_error('Insufficient permissions');
         }
-        
+
         try {
             // Disable automatic processing
             update_option('idoklad_automatic_processing', false);
-            
+
             // Clear scheduled cron jobs
             wp_clear_scheduled_hook('idoklad_check_emails');
             wp_clear_scheduled_hook('idoklad_process_queue');
-            
+
             wp_send_json_success(array(
                 'message' => __('Automatic processing stopped successfully', 'idoklad-invoice-processor'),
                 'status' => 'stopped'
             ));
-            
+
         } catch (Exception $e) {
             wp_send_json_error('Error: ' . $e->getMessage());
         }
     }
-    
+
+    /**
+     * Toggle automatic processing (AJAX)
+     */
+    public function toggle_automatic_processing() {
+        check_ajax_referer('idoklad_admin_nonce', 'nonce');
+
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Insufficient permissions');
+        }
+
+        try {
+            $automatic_processing = get_option('idoklad_automatic_processing', false);
+
+            if ($automatic_processing) {
+                update_option('idoklad_automatic_processing', false);
+                wp_clear_scheduled_hook('idoklad_check_emails');
+                wp_clear_scheduled_hook('idoklad_process_queue');
+
+                wp_send_json_success(array(
+                    'message' => __('Automatic email grabbing and processing disabled', 'idoklad-invoice-processor'),
+                    'status' => 'stopped'
+                ));
+            } else {
+                update_option('idoklad_automatic_processing', true);
+
+                if (!wp_next_scheduled('idoklad_check_emails')) {
+                    wp_schedule_event(time(), 'idoklad_email_interval', 'idoklad_check_emails');
+                }
+
+                if (!wp_next_scheduled('idoklad_process_queue')) {
+                    wp_schedule_event(time(), 'idoklad_queue_interval', 'idoklad_process_queue');
+                }
+
+                wp_send_json_success(array(
+                    'message' => __('Automatic email grabbing and processing enabled', 'idoklad-invoice-processor'),
+                    'status' => 'running'
+                ));
+            }
+
+        } catch (Exception $e) {
+            wp_send_json_error('Error: ' . $e->getMessage());
+        }
+    }
+
     /**
      * Get processing status (AJAX)
      */
