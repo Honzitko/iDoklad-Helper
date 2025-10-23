@@ -3,7 +3,7 @@
  * Plugin Name: iDoklad Invoice Processor
  * Plugin URI: https://your-website.com
  * Description: Automated invoice processing system that receives PDF invoices via email, extracts data using AI, and creates records in iDoklad with per-user credentials.
- * Version: 1.1.0
+ * Version: 1.1.1
  * Author: Your Name
  * License: GPL v2 or later
  * Text Domain: idoklad-invoice-processor
@@ -16,7 +16,7 @@ if (!defined('ABSPATH')) {
 
 // Define plugin constants (only if not already defined)
 if (!defined('IDOKLAD_PROCESSOR_VERSION')) {
-    define('IDOKLAD_PROCESSOR_VERSION', '1.1.0');
+    define('IDOKLAD_PROCESSOR_VERSION', '1.1.1');
 }
 if (!defined('IDOKLAD_PROCESSOR_PLUGIN_DIR')) {
     define('IDOKLAD_PROCESSOR_PLUGIN_DIR', plugin_dir_path(__FILE__));
