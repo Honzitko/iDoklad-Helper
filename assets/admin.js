@@ -165,7 +165,7 @@ jQuery(document).ready(function($) {
     // Log details modal
     $('.view-log-details').on('click', function() {
         var logId = $(this).data('log-id');
-        
+
         $.ajax({
             url: idoklad_ajax.ajax_url,
             type: 'POST',
@@ -184,7 +184,49 @@ jQuery(document).ready(function($) {
             }
         });
     });
-    
+
+    // Reprocess email from logs
+    $(document).on('click', '.reprocess-email', function() {
+        var button = $(this);
+        var logId = button.data('log-id');
+
+        if (!logId) {
+            alert('Error: Missing log identifier.');
+            return;
+        }
+
+        if (!confirm('Reprocess this email? The attachment will be queued again for processing.')) {
+            return;
+        }
+
+        var originalText = button.text();
+        button.prop('disabled', true).text('Reprocessing...');
+
+        $.ajax({
+            url: idoklad_ajax.ajax_url,
+            type: 'POST',
+            data: {
+                action: 'idoklad_reprocess_email',
+                log_id: logId,
+                nonce: idoklad_ajax.nonce
+            },
+            success: function(response) {
+                if (response.success) {
+                    alert(response.data || 'Email queued for reprocessing.');
+                    location.reload();
+                } else {
+                    alert('Error: ' + (response.data || 'Unable to reprocess email.'));
+                }
+            },
+            error: function() {
+                alert('Error: Failed to reprocess email.');
+            },
+            complete: function() {
+                button.prop('disabled', false).text(originalText);
+            }
+        });
+    });
+
     // Close modal
     $('.idoklad-modal-close, .idoklad-modal').on('click', function(e) {
         if (e.target === this) {
