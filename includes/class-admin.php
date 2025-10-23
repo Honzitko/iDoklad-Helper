@@ -19,6 +19,8 @@ class IDokladProcessor_Admin {
         add_action('wp_ajax_idoklad_process_queue_manually', array($this, 'process_queue_manually'));
         add_action('wp_ajax_idoklad_get_log_details', array($this, 'get_log_details'));
         add_action('wp_ajax_idoklad_export_logs', array($this, 'export_logs'));
+        add_action('wp_ajax_idoklad_export_log_entry', array($this, 'export_log_entry'));
+        add_action('wp_ajax_idoklad_delete_log', array($this, 'delete_log'));
         add_action('wp_ajax_idoklad_get_queue_status', array($this, 'get_queue_status'));
         add_action('wp_ajax_idoklad_get_user_data', array($this, 'get_user_data'));
         add_action('wp_ajax_idoklad_update_user', array($this, 'update_user'));
@@ -623,14 +625,14 @@ class IDokladProcessor_Admin {
         if ($log->extracted_data) {
             $html .= '<div class="log-detail-section">';
             $html .= '<h4>Extracted Data</h4>';
-            $html .= '<div class="json-data">' . esc_html($log->extracted_data) . '</div>';
+            $html .= '<pre class="json-data">' . $this->format_json_for_display($log->extracted_data) . '</pre>';
             $html .= '</div>';
         }
-        
+
         if ($log->idoklad_response) {
             $html .= '<div class="log-detail-section">';
             $html .= '<h4>iDoklad Response</h4>';
-            $html .= '<div class="json-data">' . esc_html($log->idoklad_response) . '</div>';
+            $html .= '<pre class="json-data">' . $this->format_json_for_display($log->idoklad_response) . '</pre>';
             $html .= '</div>';
         }
         
@@ -757,6 +759,61 @@ class IDokladProcessor_Admin {
     }
 
     /**
+     * Export a single log entry as JSON.
+     */
+    public function export_log_entry() {
+        $nonce = isset($_GET['nonce']) ? sanitize_text_field(wp_unslash($_GET['nonce'])) : '';
+
+        if (!wp_verify_nonce($nonce, 'idoklad_admin_nonce')) {
+            wp_die(__('Invalid nonce specified.', 'idoklad-invoice-processor'));
+        }
+
+        if (!current_user_can('manage_options')) {
+            wp_die(__('Insufficient permissions', 'idoklad-invoice-processor'));
+        }
+
+        $log_id = isset($_GET['log_id']) ? intval($_GET['log_id']) : 0;
+
+        if (!$log_id) {
+            wp_die(__('Log ID is required', 'idoklad-invoice-processor'));
+        }
+
+        global $wpdb;
+        $table = $wpdb->prefix . 'idoklad_logs';
+        $log = $wpdb->get_row($wpdb->prepare("SELECT * FROM $table WHERE id = %d", $log_id));
+
+        if (!$log) {
+            wp_die(__('Log entry not found', 'idoklad-invoice-processor'));
+        }
+
+        $payload = array(
+            'id' => (int) $log->id,
+            'email_from' => $log->email_from,
+            'email_subject' => $log->email_subject,
+            'attachment_name' => $log->attachment_name,
+            'processing_status' => $log->processing_status,
+            'created_at' => $log->created_at,
+            'processed_at' => $log->processed_at,
+            'error_message' => $log->error_message,
+            'extracted_data' => $this->decode_log_json($log->extracted_data),
+            'idoklad_response' => $this->decode_log_json($log->idoklad_response),
+        );
+
+        $json = wp_json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+        if (false === $json) {
+            $json = json_encode($payload, JSON_PRETTY_PRINT);
+        }
+
+        header('Content-Type: application/json; charset=utf-8');
+        header('Content-Disposition: attachment; filename="idoklad-log-' . $log->id . '.json"');
+        header('Content-Length: ' . strlen($json));
+
+        echo $json;
+        exit;
+    }
+
+    /**
      * Export logs to CSV
      */
     public function export_logs() {
@@ -782,6 +839,75 @@ class IDokladProcessor_Admin {
         
         fclose($output);
         exit;
+    }
+
+    /**
+     * Delete a specific log entry.
+     */
+    public function delete_log() {
+        check_ajax_referer('idoklad_admin_nonce', 'nonce');
+
+        if (!current_user_can('manage_options')) {
+            wp_die(__('Insufficient permissions', 'idoklad-invoice-processor'));
+        }
+
+        $log_id = isset($_POST['log_id']) ? intval($_POST['log_id']) : 0;
+
+        if (!$log_id) {
+            wp_send_json_error(__('Log ID is required', 'idoklad-invoice-processor'));
+        }
+
+        $deleted = IDokladProcessor_Database::delete_log($log_id);
+
+        if ($deleted) {
+            wp_send_json_success(array('message' => __('Log entry deleted.', 'idoklad-invoice-processor')));
+        } else {
+            wp_send_json_error(__('Failed to delete log entry.', 'idoklad-invoice-processor'));
+        }
+    }
+
+    /**
+     * Pretty-print JSON strings for modal display.
+     *
+     * @param string $json_string
+     * @return string
+     */
+    private function format_json_for_display($json_string) {
+        if ($json_string === null || $json_string === '') {
+            return '';
+        }
+
+        $decoded = json_decode($json_string, true);
+
+        if (json_last_error() === JSON_ERROR_NONE) {
+            $pretty = wp_json_encode($decoded, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+            if ($pretty !== false) {
+                return esc_html($pretty);
+            }
+        }
+
+        return esc_html($json_string);
+    }
+
+    /**
+     * Decode stored JSON data while preserving raw strings on failure.
+     *
+     * @param string|null $json_string
+     * @return mixed
+     */
+    private function decode_log_json($json_string) {
+        if ($json_string === null || $json_string === '') {
+            return null;
+        }
+
+        $decoded = json_decode($json_string, true);
+
+        if (json_last_error() === JSON_ERROR_NONE) {
+            return $decoded;
+        }
+
+        return $json_string;
     }
     
     /**

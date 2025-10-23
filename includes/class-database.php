@@ -8,9 +8,29 @@ if (!defined('ABSPATH')) {
 }
 
 class IDokladProcessor_Database {
-    
+
     public function __construct() {
         // Constructor can be used for additional initialization if needed
+    }
+
+    /**
+     * Encode data for JSON storage while preserving Unicode characters.
+     *
+     * @param mixed $value
+     * @return string|null
+     */
+    private static function encode_json_field($value) {
+        if ($value === null) {
+            return null;
+        }
+
+        $encoded = wp_json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+        if (false === $encoded) {
+            $encoded = json_encode($value);
+        }
+
+        return $encoded;
     }
     
     /**
@@ -217,8 +237,8 @@ class IDokladProcessor_Database {
                 'email_subject' => $data['email_subject'] ?? null,
                 'attachment_name' => $data['attachment_name'] ?? null,
                 'processing_status' => $data['processing_status'] ?? 'pending',
-                'extracted_data' => isset($data['extracted_data']) ? json_encode($data['extracted_data']) : null,
-                'idoklad_response' => isset($data['idoklad_response']) ? json_encode($data['idoklad_response']) : null,
+                'extracted_data' => isset($data['extracted_data']) ? self::encode_json_field($data['extracted_data']) : null,
+                'idoklad_response' => isset($data['idoklad_response']) ? self::encode_json_field($data['idoklad_response']) : null,
                 'error_message' => $data['error_message'] ?? null
             ),
             array('%s', '%s', '%s', '%s', '%s', '%s', '%s')
@@ -239,17 +259,17 @@ class IDokladProcessor_Database {
             $update_data['processing_status'] = $data['processing_status'];
             $format[] = '%s';
         }
-        
+
         if (isset($data['extracted_data'])) {
-            $update_data['extracted_data'] = json_encode($data['extracted_data']);
+            $update_data['extracted_data'] = self::encode_json_field($data['extracted_data']);
             $format[] = '%s';
         }
-        
+
         if (isset($data['idoklad_response'])) {
-            $update_data['idoklad_response'] = json_encode($data['idoklad_response']);
+            $update_data['idoklad_response'] = self::encode_json_field($data['idoklad_response']);
             $format[] = '%s';
         }
-        
+
         if (isset($data['error_message'])) {
             $update_data['error_message'] = $data['error_message'];
             $format[] = '%s';
@@ -279,12 +299,25 @@ class IDokladProcessor_Database {
     public static function get_logs($limit = 50, $offset = 0) {
         global $wpdb;
         $table = $wpdb->prefix . 'idoklad_logs';
-        
+
         return $wpdb->get_results($wpdb->prepare(
             "SELECT * FROM $table ORDER BY created_at DESC LIMIT %d OFFSET %d",
             $limit,
             $offset
         ));
+    }
+
+    /**
+     * Delete a specific processing log entry.
+     *
+     * @param int $log_id
+     * @return bool|int
+     */
+    public static function delete_log($log_id) {
+        global $wpdb;
+        $table = $wpdb->prefix . 'idoklad_logs';
+
+        return $wpdb->delete($table, array('id' => $log_id), array('%d'));
     }
     
     /**

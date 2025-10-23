@@ -13,6 +13,7 @@ class IDokladProcessor_Logger {
     private $log_file;
     private $max_log_size = 10485760; // 10MB
     private $max_log_files = 5;
+    private $json_flags = JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES;
     
     public static function get_instance() {
         if (null === self::$instance) {
@@ -109,11 +110,15 @@ class IDokladProcessor_Logger {
         
         $csv_data = array();
         $csv_data[] = array(
-            'ID', 'Email From', 'Email Subject', 'Attachment Name', 
-            'Processing Status', 'Created At', 'Processed At', 'Error Message'
+            'ID', 'Email From', 'Email Subject', 'Attachment Name',
+            'Processing Status', 'Created At', 'Processed At', 'Error Message',
+            'Extracted Data', 'iDoklad Response'
         );
-        
+
         foreach ($logs as $log) {
+            $extracted_data = $this->prepare_json_for_export($log->extracted_data);
+            $idoklad_response = $this->prepare_json_for_export($log->idoklad_response);
+
             $csv_data[] = array(
                 $log->id,
                 $log->email_from,
@@ -122,10 +127,35 @@ class IDokladProcessor_Logger {
                 $log->processing_status,
                 $log->created_at,
                 $log->processed_at,
-                $log->error_message
+                $log->error_message,
+                $extracted_data,
+                $idoklad_response
             );
         }
-        
+
         return $csv_data;
+    }
+
+    /**
+     * Convert stored JSON strings into single-line JSON for CSV exports.
+     *
+     * @param string|null $json_string
+     * @return string
+     */
+    private function prepare_json_for_export($json_string) {
+        if (empty($json_string)) {
+            return '';
+        }
+
+        $decoded = json_decode($json_string, true);
+
+        if (json_last_error() === JSON_ERROR_NONE) {
+            $encoded = wp_json_encode($decoded, $this->json_flags);
+            if ($encoded !== false) {
+                return $encoded;
+            }
+        }
+
+        return $json_string;
     }
 }
