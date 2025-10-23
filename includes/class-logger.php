@@ -8,8 +8,9 @@ if (!defined('ABSPATH')) {
 }
 
 class IDokladProcessor_Logger {
-    
+
     private static $instance = null;
+    private $log_dir;
     private $log_file;
     private $max_log_size = 10485760; // 10MB
     private $max_log_files = 5;
@@ -23,13 +24,66 @@ class IDokladProcessor_Logger {
     
     private function __construct() {
         $upload_dir = wp_upload_dir();
-        $log_dir = $upload_dir['basedir'] . '/idoklad-logs';
-        
-        if (!file_exists($log_dir)) {
-            wp_mkdir_p($log_dir);
+
+        $default_dir = trailingslashit($upload_dir['basedir']) . 'idoklad-logs';
+        /**
+         * Filters the log directory used by the iDoklad processor logger.
+         *
+         * @since 1.1.1
+         *
+         * @param string $default_dir The default log directory inside the uploads folder.
+         */
+        $this->log_dir = apply_filters('idoklad_processor_log_directory', $default_dir);
+
+        if (!file_exists($this->log_dir)) {
+            wp_mkdir_p($this->log_dir);
         }
-        
-        $this->log_file = $log_dir . '/idoklad-processor.log';
+
+        if (!$this->is_writable_directory($this->log_dir)) {
+            $fallback_directories = array(
+                trailingslashit($upload_dir['basedir']) . 'idoklad-logs',
+                trailingslashit(WP_CONTENT_DIR) . 'idoklad-logs',
+            );
+
+            foreach ($fallback_directories as $fallback_directory) {
+                if (!file_exists($fallback_directory)) {
+                    wp_mkdir_p($fallback_directory);
+                }
+
+                if ($this->is_writable_directory($fallback_directory)) {
+                    $this->log_dir = $fallback_directory;
+                    break;
+                }
+            }
+
+            if (!$this->is_writable_directory($this->log_dir)) {
+                error_log('iDoklad Processor: Log directory is not writable. Check permissions for: ' . $this->log_dir);
+            }
+        }
+
+        $this->log_file = trailingslashit($this->log_dir) . 'idoklad-processor.log';
+
+        /**
+         * Filters the maximum size a log file can reach before rotation starts.
+         *
+         * @since 1.1.1
+         *
+         * @param int $max_log_size Maximum size in bytes. Defaults to 10MB.
+         */
+        $this->max_log_size = (int) apply_filters('idoklad_processor_max_log_size', $this->max_log_size);
+
+        /**
+         * Filters the number of rotated log files that should be kept.
+         *
+         * @since 1.1.1
+         *
+         * @param int $max_log_files Number of rotated log files. Defaults to 5.
+         */
+        $this->max_log_files = max(1, (int) apply_filters('idoklad_processor_max_log_files', $this->max_log_files));
+
+        if (!file_exists($this->log_file)) {
+            @touch($this->log_file);
+        }
     }
     
     /**
@@ -69,16 +123,74 @@ class IDokladProcessor_Logger {
         $timestamp = current_time('Y-m-d H:i:s');
         $context_string = !empty($context) ? ' ' . json_encode($context) : '';
         $log_entry = "[$timestamp] [$level] $message$context_string" . PHP_EOL;
-        
+
+        $this->maybe_rotate_logs();
+
         // Write to file
-        file_put_contents($this->log_file, $log_entry, FILE_APPEND | LOCK_EX);
-        
+        $bytes_written = @file_put_contents($this->log_file, $log_entry, FILE_APPEND | LOCK_EX);
+
+        if (false === $bytes_written) {
+            error_log('iDoklad Processor: Failed to write to log file: ' . $this->log_file);
+        }
+
         // Also write to WordPress error log if debug mode is enabled
         if (get_option('idoklad_debug_mode')) {
             error_log("iDoklad Processor [$level]: $message" . $context_string);
         }
     }
-    
+
+    /**
+     * Rotate logs if necessary to keep file size manageable.
+     */
+    private function maybe_rotate_logs() {
+        if (!file_exists($this->log_file)) {
+            return;
+        }
+
+        clearstatcache(true, $this->log_file);
+        $file_size = filesize($this->log_file);
+        if (false === $file_size || $file_size < $this->max_log_size) {
+            return;
+        }
+
+        // Remove the oldest file if it already exists beyond the retention limit.
+        $oldest_file = $this->log_file . '.' . $this->max_log_files;
+        if (file_exists($oldest_file)) {
+            @unlink($oldest_file);
+        }
+
+        // Shift existing rotated files.
+        for ($index = $this->max_log_files - 1; $index >= 1; $index--) {
+            $source = $this->log_file . '.' . $index;
+            if (file_exists($source)) {
+                $destination = $this->log_file . '.' . ($index + 1);
+                @rename($source, $destination);
+            }
+        }
+
+        // Rotate the current log file.
+        @rename($this->log_file, $this->log_file . '.1');
+        @touch($this->log_file);
+    }
+
+    /**
+     * Checks if a directory is writable in the current environment.
+     *
+     * @param string $directory Directory path.
+     * @return bool
+     */
+    private function is_writable_directory($directory) {
+        if (!is_dir($directory)) {
+            return false;
+        }
+
+        if (function_exists('wp_is_writable')) {
+            return wp_is_writable($directory);
+        }
+
+        return is_writable($directory);
+    }
+
     /**
      * Export logs to CSV
      */
