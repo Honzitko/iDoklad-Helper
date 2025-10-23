@@ -1,0 +1,228 @@
+{
+  "info": {
+    "name": "iDoklad v3 — Auto-numbered IssuedInvoice (minimal, safe)",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "1) Get OAuth2 token (Client Credentials)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/x-www-form-urlencoded"
+          }
+        ],
+        "body": {
+          "mode": "urlencoded",
+          "urlencoded": [
+            {
+              "key": "grant_type",
+              "value": "client_credentials"
+            },
+            {
+              "key": "client_id",
+              "value": "{{client_id}}"
+            },
+            {
+              "key": "client_secret",
+              "value": "{{client_secret}}"
+            },
+            {
+              "key": "scope",
+              "value": "idoklad_api"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{token_url}}",
+          "host": [
+            "{{token_url}}"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('token received', ()=> pm.response.to.have.status(200)); const j=pm.response.json(); pm.environment.set('access_token', j.access_token);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "2) (Optional) Create Partner → sets partner_id",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{access_token}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"CompanyName\": \"AUTO TEST COMPANY s.r.o.\", \"Email\": \"autotest+partner@example.com\", \"CountryId\": 1, \"Street\": \"Test 1\", \"City\": \"Praha\", \"PostalCode\": \"11000\"}"
+        },
+        "url": {
+          "raw": "{{base_url}}/Contacts",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "Contacts"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.expect([200,201]).to.include(pm.response.code);\nconst r = pm.response.json();\nconst inner = r.Data || r.data || r;\nif (inner && inner.Id) { pm.environment.set('partner_id', inner.Id); }\npm.test('partner_id saved', ()=> pm.expect(pm.environment.get('partner_id')).to.exist);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "3) Resolve NumericSequence (IssuedInvoices) → id + next number",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{access_token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/NumericSequences",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "NumericSequences"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('numeric sequences fetched', ()=> pm.response.to.have.status(200));\nconst r = pm.response.json();\nconst list = (r.Data && r.Data.Items) ? r.Data.Items : (r.Items || r.Data || r.data || []);\nif (!Array.isArray(list) || list.length === 0) {\n  throw new Error('No numeric sequences returned.');\n}\nconst seq = list.find(x => x.DocumentType === 0 && x.IsDefault)\n          || list.find(x => x.DocumentType === 0)\n          || list[0];\nif (!seq || !seq.Id) { throw new Error('No IssuedInvoices numeric sequence found.'); }\npm.environment.set('numeric_sequence_id', String(seq.Id));\nconst last = seq.LastNumber || seq.LastDocumentSerialNumber || 0;\npm.environment.set('document_serial_number', String((parseInt(last,10)||0)+1));\nconsole.log('Using NumericSequenceId:', pm.environment.get('numeric_sequence_id'));\nconsole.log('Next DocumentSerialNumber:', pm.environment.get('document_serial_number'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "4) Create IssuedInvoice (uses real next number)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{access_token}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{{invoice_body}}"
+        },
+        "url": {
+          "raw": "{{base_url}}/IssuedInvoices",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "IssuedInvoices"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              "function asInt(v){ if (v===undefined || v===null || v==='') return null; const n=parseInt(v,10); return isNaN(n)?null:n; }\nconst seqId = asInt(pm.environment.get('numeric_sequence_id'));\nconst serial = asInt(pm.environment.get('document_serial_number'));\nif (seqId === null || serial === null) { throw new Error(\"Missing NumericSequenceId/DocumentSerialNumber. Run 'Resolve Numeric Sequence' first.\"); }\nconst y = new Date().getFullYear();\nconst docNum = '' + y + String(serial).padStart(4,'0');\nconst orderNum = 'PO-' + y + '-' + String(serial).padStart(2,'0');\nconst body = {\n  PartnerId: asInt(pm.environment.get('partner_id')) || 22429105,\n  Description: \"Consulting and license (API)\",\n  Note: \"Auto test via Postman\",\n  OrderNumber: orderNum,\n  VariableSymbol: docNum,\n  DateOfIssue: \"2025-10-22\",\n  DateOfTaxing: \"2025-10-22\",\n  DateOfMaturity: \"2025-11-05\",\n  DateOfAccountingEvent: \"2025-10-22\",\n  DateOfVatApplication: \"2025-10-22\",\n  CurrencyId: asInt(pm.environment.get('currency_id')) || 1,\n  ExchangeRate: 1.0,\n  ExchangeRateAmount: 1.0,\n  PaymentOptionId: asInt(pm.environment.get('payment_option_id')) || 1,\n  ConstantSymbolId: asInt(pm.environment.get('constant_symbol_id')) || 7,\n  NumericSequenceId: seqId,\n  DocumentSerialNumber: serial,\n  IsEet: false,\n  EetResponsibility: 0,\n  IsIncomeTax: true,\n  VatOnPayStatus: 0,\n  VatRegime: 0,\n  HasVatRegimeOss: false,\n  ItemsTextPrefix: \"Invoice items:\",\n  ItemsTextSuffix: \"Thanks for your business.\",\n  Items: [{\n    Name: \"Consulting service\",\n    Unit: \"hour\",\n    Amount: 2.0,\n    UnitPrice: 1500.0,\n    PriceType: 1,\n    VatRateType: 2,\n    VatRate: 0.0,\n    IsTaxMovement: false,\n    DiscountPercentage: 0.0\n  }],\n  ReportLanguage: 1\n};\npm.variables.set('invoice_body', JSON.stringify(body));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.expect([200,201]).to.include(pm.response.code);\nconst r = pm.response.json();\nconst id = (r.Data && r.Data.Id) || r.Id;\nconst num = (r.Data && r.Data.DocumentNumber) || r.DocumentNumber;\nif (id) pm.environment.set('invoice_id', id);\nif (num) pm.environment.set('invoice_number', num);\nconsole.log('Created invoice id:', id, 'number:', num);"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "https://api.idoklad.cz/v3"
+    },
+    {
+      "key": "token_url",
+      "value": "https://identity.idoklad.cz/server/connect/token"
+    },
+    {
+      "key": "client_id",
+      "value": ""
+    },
+    {
+      "key": "client_secret",
+      "value": ""
+    },
+    {
+      "key": "access_token",
+      "value": ""
+    },
+    {
+      "key": "partner_id",
+      "value": ""
+    },
+    {
+      "key": "numeric_sequence_id",
+      "value": ""
+    },
+    {
+      "key": "document_serial_number",
+      "value": ""
+    },
+    {
+      "key": "currency_id",
+      "value": ""
+    },
+    {
+      "key": "payment_option_id",
+      "value": ""
+    },
+    {
+      "key": "constant_symbol_id",
+      "value": "7"
+    },
+    {
+      "key": "invoice_id",
+      "value": ""
+    },
+    {
+      "key": "invoice_number",
+      "value": ""
+    }
+  ]
+}

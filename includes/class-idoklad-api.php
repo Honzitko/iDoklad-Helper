@@ -400,26 +400,51 @@ class IDokladProcessor_IDokladAPI {
         }
 
         $sequences = array();
-        if (isset($decoded['Data']) && is_array($decoded['Data'])) {
-            $sequences = $decoded['Data'];
-        } elseif (is_array($decoded)) {
+        if (isset($decoded['Data'])) {
+            if (is_array($decoded['Data']) && isset($decoded['Data']['Items']) && is_array($decoded['Data']['Items'])) {
+                $sequences = $decoded['Data']['Items'];
+            } elseif (is_array($decoded['Data'])) {
+                $sequences = $decoded['Data'];
+            }
+        }
+
+        if (empty($sequences) && isset($decoded['Items']) && is_array($decoded['Items'])) {
+            $sequences = $decoded['Items'];
+        }
+
+        if (empty($sequences) && is_array($decoded)) {
             $sequences = $decoded;
         }
 
-        foreach ($sequences as $sequence) {
-            if (isset($sequence['DocumentType']) && (int) $sequence['DocumentType'] === 0) {
-                $numeric_sequence_id = (int) ($sequence['Id'] ?? 0);
-                $last_number = isset($sequence['LastNumber']) ? (int) $sequence['LastNumber'] : 0;
+        $candidates = array_filter($sequences, function ($sequence) {
+            return isset($sequence['DocumentType']) && (int) $sequence['DocumentType'] === 0;
+        });
 
-                if ($numeric_sequence_id <= 0) {
-                    break;
-                }
+        if (empty($candidates)) {
+            $candidates = $sequences;
+        }
 
-                return array(
-                    'NumericSequenceId' => $numeric_sequence_id,
-                    'DocumentSerialNumber' => $last_number + 1,
-                );
+        foreach ($candidates as $sequence) {
+            $numeric_sequence_id = isset($sequence['Id']) ? (int) $sequence['Id'] : 0;
+
+            if ($numeric_sequence_id <= 0) {
+                continue;
             }
+
+            $last_number = null;
+
+            if (isset($sequence['LastNumber'])) {
+                $last_number = $sequence['LastNumber'];
+            } elseif (isset($sequence['LastDocumentSerialNumber'])) {
+                $last_number = $sequence['LastDocumentSerialNumber'];
+            }
+
+            $last_number = is_numeric($last_number) ? (int) $last_number : 0;
+
+            return array(
+                'NumericSequenceId' => $numeric_sequence_id,
+                'DocumentSerialNumber' => $last_number + 1,
+            );
         }
 
         throw new Exception('Issued invoice numeric sequence could not be resolved.');
@@ -435,24 +460,39 @@ class IDokladProcessor_IDokladAPI {
      * @return array<string,mixed>
      */
     private function build_issued_invoice_payload($partner_id, $numeric_sequence_id, $document_serial_number) {
+        $serial_number = max(1, (int) $document_serial_number);
+        $numeric_sequence_id = (int) $numeric_sequence_id;
+        $current_timestamp = time();
+        $year = (int) gmdate('Y', $current_timestamp);
+        $padded_serial_for_variable_symbol = str_pad((string) $serial_number, 4, '0', STR_PAD_LEFT);
+        $padded_serial_for_order = str_pad((string) $serial_number, 2, '0', STR_PAD_LEFT);
+        $variable_symbol = sprintf('%d%s', $year, $padded_serial_for_variable_symbol);
+        $order_number = sprintf('PO-%d-%s', $year, $padded_serial_for_order);
+
+        $issue_date = gmdate('Y-m-d', $current_timestamp);
+        $tax_date = $issue_date;
+        $maturity_date = gmdate('Y-m-d', strtotime('+14 days', $current_timestamp));
+        $accounting_event_date = $issue_date;
+        $vat_application_date = $issue_date;
+
         return array(
-            'PartnerId' => $partner_id,
-            'Description' => 'Consulting and license services (API integration test)',
-            'Note' => 'Automatic test invoice created through API integration',
-            'OrderNumber' => 'PO-20251023-01',
-            'VariableSymbol' => '20250001',
-            'DateOfIssue' => '2025-10-23',
-            'DateOfTaxing' => '2025-10-23',
-            'DateOfMaturity' => '2025-11-06',
-            'DateOfAccountingEvent' => '2025-10-23',
-            'DateOfVatApplication' => '2025-10-23',
+            'PartnerId' => (int) $partner_id,
+            'Description' => 'Consulting and license (API)',
+            'Note' => 'Auto test via Postman-compatible integration',
+            'OrderNumber' => $order_number,
+            'VariableSymbol' => $variable_symbol,
+            'DateOfIssue' => $issue_date,
+            'DateOfTaxing' => $tax_date,
+            'DateOfMaturity' => $maturity_date,
+            'DateOfAccountingEvent' => $accounting_event_date,
+            'DateOfVatApplication' => $vat_application_date,
             'CurrencyId' => 1,
             'ExchangeRate' => 1.0,
             'ExchangeRateAmount' => 1.0,
             'PaymentOptionId' => 1,
             'ConstantSymbolId' => 7,
             'NumericSequenceId' => $numeric_sequence_id,
-            'DocumentSerialNumber' => $document_serial_number,
+            'DocumentSerialNumber' => $serial_number,
             'IsEet' => false,
             'EetResponsibility' => 0,
             'IsIncomeTax' => true,
@@ -460,30 +500,13 @@ class IDokladProcessor_IDokladAPI {
             'VatRegime' => 0,
             'HasVatRegimeOss' => false,
             'ItemsTextPrefix' => 'Invoice items:',
-            'ItemsTextSuffix' => 'Thank you for your cooperation.',
+            'ItemsTextSuffix' => 'Thanks for your business.',
             'Items' => array(
                 array(
                     'Name' => 'Consulting service',
-                    'Description' => 'Consulting work for October',
-                    'Code' => 'CONSULT001',
-                    'ItemType' => 0,
                     'Unit' => 'hour',
                     'Amount' => 2.0,
                     'UnitPrice' => 1500.0,
-                    'PriceType' => 1,
-                    'VatRateType' => 2,
-                    'VatRate' => 0.0,
-                    'IsTaxMovement' => false,
-                    'DiscountPercentage' => 0.0,
-                ),
-                array(
-                    'Name' => 'Software license fee',
-                    'Description' => 'Monthly license',
-                    'Code' => 'LIC001',
-                    'ItemType' => 0,
-                    'Unit' => 'pcs',
-                    'Amount' => 1.0,
-                    'UnitPrice' => 499.0,
                     'PriceType' => 1,
                     'VatRateType' => 2,
                     'VatRate' => 0.0,
