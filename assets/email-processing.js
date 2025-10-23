@@ -73,6 +73,19 @@ jQuery(document).ready(function($) {
                             statusDot.removeClass('status-running').addClass('status-stopped');
                             statusText.text('Automatic Processing: STOPPED');
                         }
+
+                        const toggleButton = $('#toggle-automatic-processing');
+                        if (toggleButton.length) {
+                            toggleButton.data('running', !!data.automatic_processing);
+
+                            if (data.automatic_processing) {
+                                toggleButton.removeClass('button-primary').addClass('button-secondary');
+                                toggleButton.html('<span class="dashicons dashicons-controls-pause"></span> Disable Auto Email Processing');
+                            } else {
+                                toggleButton.removeClass('button-secondary').addClass('button-primary');
+                                toggleButton.html('<span class="dashicons dashicons-controls-play"></span> Enable Auto Email Processing');
+                            }
+                        }
                         
                         // Update next run times
                         if (data.next_email_check) {
@@ -97,6 +110,40 @@ jQuery(document).ready(function($) {
             });
         }
         
+        // Toggle automatic processing
+        $('#toggle-automatic-processing').on('click', function() {
+            const button = $(this);
+            const originalHtml = button.html();
+            const isRunning = !!button.data('running');
+
+            button.prop('disabled', true).text(isRunning ? 'Disabling...' : 'Enabling...');
+
+            $.ajax({
+                url: ajaxurl,
+                type: 'POST',
+                data: {
+                    action: 'idoklad_toggle_automatic_processing',
+                    nonce: idoklad_admin.nonce
+                },
+                success: function(response) {
+                    if (response.success) {
+                        const status = response.data && response.data.status ? response.data.status : (isRunning ? 'stopped' : 'running');
+                        button.data('running', status === 'running');
+                        addLogEntry(response.data.message, 'success');
+                        updateProcessingStatus();
+                    } else {
+                        addLogEntry('Failed to toggle automatic processing: ' + response.data, 'error');
+                    }
+                },
+                error: function() {
+                    addLogEntry('Error toggling automatic processing', 'error');
+                },
+                complete: function() {
+                    button.prop('disabled', false).html(originalHtml);
+                }
+            });
+        });
+
         // Start automatic processing
         $('#start-automatic-processing').on('click', function() {
             const button = $(this);
