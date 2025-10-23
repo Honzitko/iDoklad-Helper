@@ -150,30 +150,57 @@ class IDokladProcessor_IDokladAPIV3Integration {
         );
         
         $response = wp_remote_request($url, $args);
-        
+
         if (is_wp_error($response)) {
-            $this->logger->info('Partner creation failed: ' . $response->get_error_message(), 'error');
+            $error_message = $response->get_error_message();
+            $this->logger->info('Partner creation failed: ' . $error_message, 'error');
+            $this->log_partner_creation($partner_payload, null, 0, $error_message);
             return 22429105; // Fallback to default
         }
-        
+
         $response_code = wp_remote_retrieve_response_code($response);
         $response_body = wp_remote_retrieve_body($response);
-        
+        $response_data = json_decode($response_body, true);
+
         if (!in_array($response_code, array(200, 201))) {
-            $this->logger->error('Partner creation failed with status ' . $response_code . ': ' . $response_body);
+            $error_message = isset($response_data['Message']) ? $response_data['Message'] : $response_body;
+            $this->logger->error('Partner creation failed with status ' . $response_code . ': ' . $error_message);
+            $this->log_partner_creation($partner_payload, $response_data, $response_code, $error_message);
             return 22429105; // Fallback to default
         }
-        
-        $data = json_decode($response_body, true);
-        
+
+        $this->log_partner_creation($partner_payload, $response_data, $response_code);
+
         // Extract partner ID exactly as in Postman collection
         $partner_id = null;
-        if (isset($data['Data']['Id'])) {
-            $partner_id = $data['Data']['Id'];
-        } elseif (isset($data['Id'])) {
-            $partner_id = $data['Id'];
+        $partner_inner = null;
+
+        if (isset($response_data['Data'])) {
+            $partner_inner = $response_data['Data'];
+        } elseif (isset($response_data['data'])) {
+            $partner_inner = $response_data['data'];
+        } else {
+            $partner_inner = $response_data;
         }
-        
+
+        if (is_array($partner_inner)) {
+            if (isset($partner_inner['Id'])) {
+                $partner_id = $partner_inner['Id'];
+            } elseif (isset($partner_inner['id'])) {
+                $partner_id = $partner_inner['id'];
+            } elseif (isset($partner_inner[0]['Id'])) {
+                $partner_id = $partner_inner[0]['Id'];
+            } elseif (isset($partner_inner[0]['id'])) {
+                $partner_id = $partner_inner[0]['id'];
+            }
+        }
+
+        if (!$partner_id && isset($response_data['Id'])) {
+            $partner_id = $response_data['Id'];
+        } elseif (!$partner_id && isset($response_data['id'])) {
+            $partner_id = $response_data['id'];
+        }
+
         if ($partner_id) {
             $this->logger->info('Partner created with ID: ' . $partner_id);
             return $partner_id;
@@ -202,19 +229,24 @@ class IDokladProcessor_IDokladAPIV3Integration {
         );
         
         $response = wp_remote_request($url, $args);
-        
+
         if (is_wp_error($response)) {
-            throw new Exception('NumericSequences request failed: ' . $response->get_error_message());
+            $error_message = $response->get_error_message();
+            $this->log_numeric_sequence(null, 0, $error_message);
+            throw new Exception('NumericSequences request failed: ' . $error_message);
         }
-        
+
         $response_code = wp_remote_retrieve_response_code($response);
         $response_body = wp_remote_retrieve_body($response);
         $response_data = json_decode($response_body, true);
-        
+
         if ($response_code !== 200) {
             $error_message = isset($response_data['Message']) ? $response_data['Message'] : 'Failed to retrieve numeric sequences';
+            $this->log_numeric_sequence($response_data, $response_code, $error_message);
             throw new Exception('NumericSequences request failed with status ' . $response_code . ': ' . $error_message);
         }
+
+        $this->log_numeric_sequence($response_data, $response_code);
         
         // Find the NumericSequence following Postman logic
         $numeric_sequence = null;
@@ -223,10 +255,16 @@ class IDokladProcessor_IDokladAPIV3Integration {
         // Handle different response structures
         if (isset($response_data['Data']) && isset($response_data['Data']['Items'])) {
             $list = $response_data['Data']['Items'];
+        } elseif (isset($response_data['data']) && isset($response_data['data']['items'])) {
+            $list = $response_data['data']['items'];
         } elseif (isset($response_data['Items'])) {
             $list = $response_data['Items'];
+        } elseif (isset($response_data['items'])) {
+            $list = $response_data['items'];
         } elseif (isset($response_data['Data'])) {
             $list = is_array($response_data['Data']) ? $response_data['Data'] : array($response_data['Data']);
+        } elseif (isset($response_data['data'])) {
+            $list = is_array($response_data['data']) ? $response_data['data'] : array($response_data['data']);
         } else {
             $list = is_array($response_data) ? $response_data : array($response_data);
         }
@@ -330,16 +368,48 @@ class IDokladProcessor_IDokladAPIV3Integration {
         $invoice_id = null;
         $document_number = null;
         
-        if (isset($response_data['Data']['Id'])) {
-            $invoice_id = $response_data['Data']['Id'];
-        } elseif (isset($response_data['Id'])) {
-            $invoice_id = $response_data['Id'];
+        if (isset($response_data['Data'])) {
+            $invoice_inner = $response_data['Data'];
+        } elseif (isset($response_data['data'])) {
+            $invoice_inner = $response_data['data'];
+        } else {
+            $invoice_inner = $response_data;
         }
-        
-        if (isset($response_data['Data']['DocumentNumber'])) {
-            $document_number = $response_data['Data']['DocumentNumber'];
-        } elseif (isset($response_data['DocumentNumber'])) {
+
+        if (is_array($invoice_inner)) {
+            if (isset($invoice_inner['Id'])) {
+                $invoice_id = $invoice_inner['Id'];
+            } elseif (isset($invoice_inner['id'])) {
+                $invoice_id = $invoice_inner['id'];
+            } elseif (isset($invoice_inner[0]['Id'])) {
+                $invoice_id = $invoice_inner[0]['Id'];
+            } elseif (isset($invoice_inner[0]['id'])) {
+                $invoice_id = $invoice_inner[0]['id'];
+            }
+        }
+
+        if (!$invoice_id && isset($response_data['Id'])) {
+            $invoice_id = $response_data['Id'];
+        } elseif (!$invoice_id && isset($response_data['id'])) {
+            $invoice_id = $response_data['id'];
+        }
+
+        if (is_array($invoice_inner)) {
+            if (isset($invoice_inner['DocumentNumber'])) {
+                $document_number = $invoice_inner['DocumentNumber'];
+            } elseif (isset($invoice_inner['documentNumber'])) {
+                $document_number = $invoice_inner['documentNumber'];
+            } elseif (isset($invoice_inner[0]['DocumentNumber'])) {
+                $document_number = $invoice_inner[0]['DocumentNumber'];
+            } elseif (isset($invoice_inner[0]['documentNumber'])) {
+                $document_number = $invoice_inner[0]['documentNumber'];
+            }
+        }
+
+        if (!$document_number && isset($response_data['DocumentNumber'])) {
             $document_number = $response_data['DocumentNumber'];
+        } elseif (!$document_number && isset($response_data['documentNumber'])) {
+            $document_number = $response_data['documentNumber'];
         }
         
         $result = array(
@@ -423,13 +493,15 @@ class IDokladProcessor_IDokladAPIV3Integration {
     private function build_custom_invoice_payload($invoice_data, $numeric_sequence_data, $partner_id) {
         $current_date = date('Y-m-d');
         $maturity_date = isset($invoice_data['maturity_date']) ? $invoice_data['maturity_date'] : date('Y-m-d', strtotime($current_date . ' +14 days'));
-        
+        $serial = $numeric_sequence_data['DocumentSerialNumber'];
+        $year = date('Y');
+
         return array(
             'PartnerId' => $partner_id,
             'Description' => isset($invoice_data['description']) ? $invoice_data['description'] : 'Invoice created via API integration',
             'Note' => isset($invoice_data['note']) ? $invoice_data['note'] : 'Automatic invoice created through API integration',
-            'OrderNumber' => isset($invoice_data['order_number']) ? $invoice_data['order_number'] : 'PO-' . date('Ymd') . '-01',
-            'VariableSymbol' => isset($invoice_data['variable_symbol']) ? $invoice_data['variable_symbol'] : date('Y') . '0001',
+            'OrderNumber' => isset($invoice_data['order_number']) ? $invoice_data['order_number'] : 'PO-' . $year . '-' . str_pad($serial, 2, '0', STR_PAD_LEFT),
+            'VariableSymbol' => isset($invoice_data['variable_symbol']) ? $invoice_data['variable_symbol'] : $year . str_pad($serial, 4, '0', STR_PAD_LEFT),
             
             'DateOfIssue' => isset($invoice_data['date_of_issue']) ? $invoice_data['date_of_issue'] : $current_date,
             'DateOfTaxing' => isset($invoice_data['date_of_taxing']) ? $invoice_data['date_of_taxing'] : $current_date,
@@ -455,7 +527,7 @@ class IDokladProcessor_IDokladAPIV3Integration {
             'HasVatRegimeOss' => isset($invoice_data['has_vat_regime_oss']) ? $invoice_data['has_vat_regime_oss'] : false,
             
             'ItemsTextPrefix' => isset($invoice_data['items_text_prefix']) ? $invoice_data['items_text_prefix'] : 'Invoice items:',
-            'ItemsTextSuffix' => isset($invoice_data['items_text_suffix']) ? $invoice_data['items_text_suffix'] : 'Thank you for your cooperation.',
+            'ItemsTextSuffix' => isset($invoice_data['items_text_suffix']) ? $invoice_data['items_text_suffix'] : 'Thanks for your business.',
             
             'Items' => isset($invoice_data['items']) ? $invoice_data['items'] : $this->build_default_items(),
             'ReportLanguage' => isset($invoice_data['report_language']) ? $invoice_data['report_language'] : 1
