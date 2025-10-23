@@ -569,7 +569,7 @@ class IDokladProcessor_Admin {
             wp_die(__('Insufficient permissions', 'idoklad-invoice-processor'));
         }
         
-        $user_id = intval($_POST['user_id']);
+        $user_id = isset($_POST['user_id']) ? intval($_POST['user_id']) : 0;
         
         if (!$user_id) {
             wp_send_json_error(__('User ID is required', 'idoklad-invoice-processor'));
@@ -673,7 +673,11 @@ class IDokladProcessor_Admin {
             wp_die(__('Insufficient permissions', 'idoklad-invoice-processor'));
         }
         
-        $log_id = intval($_POST['log_id']);
+        $log_id = isset($_POST['log_id']) ? intval($_POST['log_id']) : 0;
+
+        if (!$log_id) {
+            wp_send_json_error(__('Log ID is required', 'idoklad-invoice-processor'));
+        }
         
         global $wpdb;
         $table = $wpdb->prefix . 'idoklad_logs';
@@ -788,7 +792,7 @@ class IDokladProcessor_Admin {
             wp_die(__('Insufficient permissions', 'idoklad-invoice-processor'));
         }
         
-        $user_id = intval($_POST['user_id']);
+        $user_id = isset($_POST['user_id']) ? intval($_POST['user_id']) : 0;
         
         if (!$user_id) {
             wp_send_json_error(__('User ID is required', 'idoklad-invoice-processor'));
@@ -818,13 +822,13 @@ class IDokladProcessor_Admin {
             wp_die(__('Insufficient permissions', 'idoklad-invoice-processor'));
         }
         
-        $user_id = intval($_POST['user_id']);
-        $email = sanitize_email($_POST['email']);
-        $name = sanitize_text_field($_POST['name']);
-        $idoklad_client_id = sanitize_text_field($_POST['idoklad_client_id']);
-        $idoklad_client_secret = sanitize_text_field($_POST['idoklad_client_secret']);
-        $idoklad_api_url = esc_url_raw($_POST['idoklad_api_url']);
-        $idoklad_user_id = sanitize_text_field($_POST['idoklad_user_id']);
+        $user_id = isset($_POST['user_id']) ? intval($_POST['user_id']) : 0;
+        $email = isset($_POST['email']) ? sanitize_email($_POST['email']) : '';
+        $name = isset($_POST['name']) ? sanitize_text_field($_POST['name']) : '';
+        $idoklad_client_id = isset($_POST['idoklad_client_id']) ? sanitize_text_field($_POST['idoklad_client_id']) : '';
+        $idoklad_client_secret = isset($_POST['idoklad_client_secret']) ? sanitize_text_field($_POST['idoklad_client_secret']) : '';
+        $idoklad_api_url = isset($_POST['idoklad_api_url']) ? esc_url_raw($_POST['idoklad_api_url']) : '';
+        $idoklad_user_id = isset($_POST['idoklad_user_id']) ? sanitize_text_field($_POST['idoklad_user_id']) : '';
         $is_active = isset($_POST['is_active']) ? 1 : 0;
         
         if (!$user_id) {
@@ -834,7 +838,11 @@ class IDokladProcessor_Admin {
         if (!is_email($email)) {
             wp_send_json_error(__('Invalid email address', 'idoklad-invoice-processor'));
         }
-        
+
+        if ($name === '') {
+            wp_send_json_error(__('User name is required', 'idoklad-invoice-processor'));
+        }
+
         // Check if email is being changed and if new email already exists
         global $wpdb;
         $table = $wpdb->prefix . 'idoklad_users';
@@ -1076,8 +1084,8 @@ class IDokladProcessor_Admin {
             wp_die(__('Insufficient permissions', 'idoklad-invoice-processor'));
         }
         
-        $queue_id = intval($_POST['queue_id']);
-        
+        $queue_id = isset($_POST['queue_id']) ? intval($_POST['queue_id']) : 0;
+
         if (!$queue_id) {
             wp_send_json_error(__('Queue ID is required', 'idoklad-invoice-processor'));
         }
@@ -1681,8 +1689,8 @@ class IDokladProcessor_Admin {
             wp_die(__('Insufficient permissions', 'idoklad-invoice-processor'));
         }
         
-        $queue_id = intval($_POST['queue_id']);
-        
+        $queue_id = isset($_POST['queue_id']) ? intval($_POST['queue_id']) : 0;
+
         if (!$queue_id) {
             wp_send_json_error(__('Queue ID is required', 'idoklad-invoice-processor'));
         }
