@@ -126,17 +126,40 @@ if (is_wp_error($partner_response)) {
 
 $partner_response_code = wp_remote_retrieve_response_code($partner_response);
 $partner_response_body = wp_remote_retrieve_body($partner_response);
-$partner_data = json_decode($partner_response_body, true);
+$partner_response_data = json_decode($partner_response_body, true);
 
 if (!in_array($partner_response_code, array(200, 201))) {
     die("Partner creation failed with status $partner_response_code: $partner_response_body\n");
 }
 
 $partner_id = null;
-if (isset($partner_data['Data']['Id'])) {
-    $partner_id = $partner_data['Data']['Id'];
-} elseif (isset($partner_data['Id'])) {
-    $partner_id = $partner_data['Id'];
+$partner_inner = null;
+if (isset($partner_response_data['Data'])) {
+    $partner_inner = $partner_response_data['Data'];
+} elseif (isset($partner_response_data['data'])) {
+    $partner_inner = $partner_response_data['data'];
+} else {
+    $partner_inner = $partner_response_data;
+}
+
+if (is_array($partner_inner)) {
+    if (isset($partner_inner['Id'])) {
+        $partner_id = $partner_inner['Id'];
+    } elseif (isset($partner_inner['id'])) {
+        $partner_id = $partner_inner['id'];
+    } elseif (isset($partner_inner['Data']['Id'])) {
+        $partner_id = $partner_inner['Data']['Id'];
+    } elseif (isset($partner_inner[0]['Id'])) {
+        $partner_id = $partner_inner[0]['Id'];
+    } elseif (isset($partner_inner[0]['id'])) {
+        $partner_id = $partner_inner[0]['id'];
+    }
+}
+
+if (!$partner_id && isset($partner_response_data['Id'])) {
+    $partner_id = $partner_response_data['Id'];
+} elseif (!$partner_id && isset($partner_response_data['id'])) {
+    $partner_id = $partner_response_data['id'];
 }
 
 echo "✓ Partner created with ID: $partner_id\n\n";
@@ -170,10 +193,16 @@ if ($numeric_response_code !== 200) {
 $list = array();
 if (isset($numeric_data['Data']) && isset($numeric_data['Data']['Items'])) {
     $list = $numeric_data['Data']['Items'];
+} elseif (isset($numeric_data['data']) && isset($numeric_data['data']['items'])) {
+    $list = $numeric_data['data']['items'];
 } elseif (isset($numeric_data['Items'])) {
     $list = $numeric_data['Items'];
+} elseif (isset($numeric_data['items'])) {
+    $list = $numeric_data['items'];
 } elseif (isset($numeric_data['Data'])) {
     $list = is_array($numeric_data['Data']) ? $numeric_data['Data'] : array($numeric_data['Data']);
+} elseif (isset($numeric_data['data'])) {
+    $list = is_array($numeric_data['data']) ? $numeric_data['data'] : array($numeric_data['data']);
 } else {
     $list = is_array($numeric_data) ? $numeric_data : array($numeric_data);
 }
@@ -290,7 +319,7 @@ if (is_wp_error($invoice_response)) {
 
 $invoice_response_code = wp_remote_retrieve_response_code($invoice_response);
 $invoice_response_body = wp_remote_retrieve_body($invoice_response);
-$invoice_data = json_decode($invoice_response_body, true);
+$invoice_response_data = json_decode($invoice_response_body, true);
 
 if (!in_array($invoice_response_code, array(200, 201))) {
     die("Invoice creation failed with status $invoice_response_code: $invoice_response_body\n");
@@ -300,16 +329,52 @@ if (!in_array($invoice_response_code, array(200, 201))) {
 $invoice_id = null;
 $invoice_number = null;
 
-if (isset($invoice_data['Data']['Id'])) {
-    $invoice_id = $invoice_data['Data']['Id'];
-} elseif (isset($invoice_data['Id'])) {
-    $invoice_id = $invoice_data['Id'];
+if (isset($invoice_response_data['Data'])) {
+    $invoice_inner = $invoice_response_data['Data'];
+} elseif (isset($invoice_response_data['data'])) {
+    $invoice_inner = $invoice_response_data['data'];
+} else {
+    $invoice_inner = $invoice_response_data;
 }
 
-if (isset($invoice_data['Data']['DocumentNumber'])) {
-    $invoice_number = $invoice_data['Data']['DocumentNumber'];
-} elseif (isset($invoice_data['DocumentNumber'])) {
-    $invoice_number = $invoice_data['DocumentNumber'];
+if (is_array($invoice_inner)) {
+    if (isset($invoice_inner['Id'])) {
+        $invoice_id = $invoice_inner['Id'];
+    } elseif (isset($invoice_inner['id'])) {
+        $invoice_id = $invoice_inner['id'];
+    } elseif (isset($invoice_inner['Data']['Id'])) {
+        $invoice_id = $invoice_inner['Data']['Id'];
+    } elseif (isset($invoice_inner[0]['Id'])) {
+        $invoice_id = $invoice_inner[0]['Id'];
+    } elseif (isset($invoice_inner[0]['id'])) {
+        $invoice_id = $invoice_inner[0]['id'];
+    }
+}
+
+if (!$invoice_id && isset($invoice_response_data['Id'])) {
+    $invoice_id = $invoice_response_data['Id'];
+} elseif (!$invoice_id && isset($invoice_response_data['id'])) {
+    $invoice_id = $invoice_response_data['id'];
+}
+
+if (is_array($invoice_inner)) {
+    if (isset($invoice_inner['DocumentNumber'])) {
+        $invoice_number = $invoice_inner['DocumentNumber'];
+    } elseif (isset($invoice_inner['documentNumber'])) {
+        $invoice_number = $invoice_inner['documentNumber'];
+    } elseif (isset($invoice_inner['Data']['DocumentNumber'])) {
+        $invoice_number = $invoice_inner['Data']['DocumentNumber'];
+    } elseif (isset($invoice_inner[0]['DocumentNumber'])) {
+        $invoice_number = $invoice_inner[0]['DocumentNumber'];
+    } elseif (isset($invoice_inner[0]['documentNumber'])) {
+        $invoice_number = $invoice_inner[0]['documentNumber'];
+    }
+}
+
+if (!$invoice_number && isset($invoice_response_data['DocumentNumber'])) {
+    $invoice_number = $invoice_response_data['DocumentNumber'];
+} elseif (!$invoice_number && isset($invoice_response_data['documentNumber'])) {
+    $invoice_number = $invoice_response_data['documentNumber'];
 }
 
 echo "✓ Created invoice id: $invoice_id, number: $invoice_number\n\n";
