@@ -53,6 +53,11 @@ if (!defined('ABSPATH')) {
                                         <button type="button" class="button button-small view-log-details" data-log-id="<?php echo $log->id; ?>">
                                             <?php _e('View Details', 'idoklad-invoice-processor'); ?>
                                         </button>
+                                        <?php if (!in_array($log->processing_status, array('pending', 'processing'), true)): ?>
+                                            <button type="button" class="button button-small reprocess-email" data-log-id="<?php echo $log->id; ?>" style="margin-left: 5px;">
+                                                <?php _e('Reprocess', 'idoklad-invoice-processor'); ?>
+                                            </button>
+                                        <?php endif; ?>
                                     </td>
                                 </tr>
                             <?php endforeach; ?>

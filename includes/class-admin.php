@@ -28,6 +28,7 @@ class IDokladProcessor_Admin {
         add_action('wp_ajax_idoklad_get_queue_details', array($this, 'get_queue_details'));
         add_action('wp_ajax_idoklad_refresh_queue', array($this, 'refresh_queue'));
         add_action('wp_ajax_idoklad_reset_stuck_items', array($this, 'reset_stuck_items'));
+        add_action('wp_ajax_idoklad_reprocess_email', array($this, 'reprocess_email'));
         
         // Diagnostics AJAX handlers
         add_action('wp_ajax_idoklad_test_pdf_parsing', array($this, 'test_pdf_parsing'));
@@ -592,7 +593,7 @@ class IDokladProcessor_Admin {
      */
     public function get_log_details() {
         check_ajax_referer('idoklad_admin_nonce', 'nonce');
-        
+
         if (!current_user_can('manage_options')) {
             wp_die(__('Insufficient permissions', 'idoklad-invoice-processor'));
         }
@@ -639,10 +640,122 @@ class IDokladProcessor_Admin {
             $html .= '<p style="color: red;">' . esc_html($log->error_message) . '</p>';
             $html .= '</div>';
         }
-        
+
         wp_send_json_success($html);
     }
-    
+
+    /**
+     * Requeue a received email for processing.
+     */
+    public function reprocess_email() {
+        check_ajax_referer('idoklad_admin_nonce', 'nonce');
+
+        if (!current_user_can('manage_options')) {
+            wp_die(__('Insufficient permissions', 'idoklad-invoice-processor'));
+        }
+
+        $log_id = isset($_POST['log_id']) ? intval($_POST['log_id']) : 0;
+
+        if (!$log_id) {
+            wp_send_json_error(__('Log ID is required', 'idoklad-invoice-processor'));
+        }
+
+        global $wpdb;
+
+        $logs_table = $wpdb->prefix . 'idoklad_logs';
+        $log = $wpdb->get_row($wpdb->prepare("SELECT * FROM $logs_table WHERE id = %d", $log_id));
+
+        if (!$log) {
+            wp_send_json_error(__('Log entry not found', 'idoklad-invoice-processor'));
+        }
+
+        $queue_table = $wpdb->prefix . 'idoklad_queue';
+        $queue_items = $wpdb->get_results($wpdb->prepare(
+            "SELECT * FROM $queue_table WHERE email_from = %s ORDER BY created_at DESC LIMIT 20",
+            $log->email_from
+        ));
+
+        $attachment_name = $log->attachment_name ? trim($log->attachment_name) : '';
+        $matching_item = null;
+
+        if ($queue_items) {
+            foreach ($queue_items as $item) {
+                $subject_match = true;
+
+                if (!empty($log->email_subject) || !empty($item->email_subject)) {
+                    $subject_match = strcasecmp((string) $item->email_subject, (string) $log->email_subject) === 0;
+                }
+
+                if (!$subject_match) {
+                    continue;
+                }
+
+                if ($attachment_name !== '') {
+                    if (basename((string) $item->attachment_path) !== $attachment_name) {
+                        continue;
+                    }
+                }
+
+                $matching_item = $item;
+                break;
+            }
+        }
+
+        if (!$matching_item && $attachment_name !== '') {
+            $like = '%' . $wpdb->esc_like($attachment_name);
+            $matching_item = $wpdb->get_row($wpdb->prepare(
+                "SELECT * FROM $queue_table WHERE email_from = %s AND attachment_path LIKE %s ORDER BY created_at DESC LIMIT 1",
+                $log->email_from,
+                $like
+            ));
+        }
+
+        if (!$matching_item) {
+            wp_send_json_error(__('Unable to locate the original queue item for this email.', 'idoklad-invoice-processor'));
+        }
+
+        $attachment_path = $matching_item->attachment_path;
+
+        if (empty($attachment_path) || !file_exists($attachment_path)) {
+            wp_send_json_error(__('The original attachment is no longer available. Please forward the email again.', 'idoklad-invoice-processor'));
+        }
+
+        $reset = $wpdb->query($wpdb->prepare(
+            "UPDATE $queue_table SET status = %s, attempts = 0, processed_at = NULL, current_step = NULL WHERE id = %d",
+            'pending',
+            $matching_item->id
+        ));
+
+        if ($reset === false) {
+            wp_send_json_error(__('Failed to reset the queue item for reprocessing.', 'idoklad-invoice-processor'));
+        }
+
+        $current_user = function_exists('wp_get_current_user') ? wp_get_current_user() : null;
+        $requested_by = 'manual';
+
+        if ($current_user instanceof WP_User) {
+            if (!empty($current_user->user_email)) {
+                $requested_by = $current_user->user_email;
+            } elseif (!empty($current_user->user_login)) {
+                $requested_by = $current_user->user_login;
+            }
+        }
+
+        IDokladProcessor_Database::add_queue_step($matching_item->id, 'Reprocess requested', array(
+            'requested_by' => $requested_by,
+            'source' => 'logs',
+            'log_id' => $log_id
+        ));
+
+        $wpdb->query($wpdb->prepare(
+            "UPDATE $logs_table SET processing_status = %s, extracted_data = NULL, idoklad_response = NULL, error_message = NULL, processed_at = NULL WHERE id = %d",
+            'pending',
+            $log_id
+        ));
+
+        wp_send_json_success(__('Email queued for reprocessing.', 'idoklad-invoice-processor'));
+    }
+
     /**
      * Export logs to CSV
      */
