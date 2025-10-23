@@ -253,15 +253,32 @@ class IDokladProcessor_PDFCoAIParserEnhanced {
         $this->log_step('Raw parsed data extracted', array('parsed_data' => $parsed_data));
         
         // Validate required fields
-        $required_fields = array('DocumentNumber', 'DateOfIssue', 'PartnerName', 'Items');
+        $required_fields = array(
+            'DocumentNumber' => array('DocumentNumber', 'InvoiceNumber', 'InvoiceNo', 'document_number', 'invoice_number'),
+            'DateOfIssue' => array('DateOfIssue', 'IssueDate', 'InvoiceDate', 'date_of_issue', 'issue_date'),
+            'PartnerName' => array('PartnerName', 'CompanyName', 'SupplierName', 'partner_name', 'company_name'),
+            'Items' => array('Items', 'items', 'LineItems', 'lines', 'InvoiceItems')
+        );
         $missing_fields = array();
-        
-        foreach ($required_fields as $field) {
-            if (!isset($parsed_data[$field]) || empty($parsed_data[$field])) {
+
+        foreach ($required_fields as $field => $aliases) {
+            $value = $this->extract_field($parsed_data, $aliases);
+            if ($field === 'Items') {
+                if (is_string($value)) {
+                    $decoded_items = json_decode($value, true);
+                    if (json_last_error() === JSON_ERROR_NONE) {
+                        $value = $decoded_items;
+                    }
+                }
+
+                if (empty($value) || !is_array($value)) {
+                    $missing_fields[] = $field;
+                }
+            } elseif ($this->is_value_empty($value)) {
                 $missing_fields[] = $field;
             }
         }
-        
+
         if (!empty($missing_fields)) {
             $this->log_step('Missing required fields', array('missing_fields' => $missing_fields));
         }
@@ -278,43 +295,43 @@ class IDokladProcessor_PDFCoAIParserEnhanced {
         $idoklad_data = array();
         
         // Document identification
-        $idoklad_data['DocumentNumber'] = $this->extract_field($extracted_data, array('DocumentNumber', 'InvoiceNumber', 'InvoiceNo'));
-        $idoklad_data['DateOfIssue'] = $this->normalize_date($this->extract_field($extracted_data, array('DateOfIssue', 'IssueDate', 'InvoiceDate')));
-        $idoklad_data['DateOfTaxing'] = $this->normalize_date($this->extract_field($extracted_data, array('DateOfTaxing', 'TaxDate')));
-        $idoklad_data['DateOfMaturity'] = $this->normalize_date($this->extract_field($extracted_data, array('DateOfMaturity', 'DueDate', 'MaturityDate')));
+        $idoklad_data['DocumentNumber'] = $this->extract_field($extracted_data, array('DocumentNumber', 'InvoiceNumber', 'InvoiceNo', 'document_number', 'invoice_number'));
+        $idoklad_data['DateOfIssue'] = $this->normalize_date($this->extract_field($extracted_data, array('DateOfIssue', 'IssueDate', 'InvoiceDate', 'date_of_issue', 'issue_date', 'invoice_date')));
+        $idoklad_data['DateOfTaxing'] = $this->normalize_date($this->extract_field($extracted_data, array('DateOfTaxing', 'TaxDate', 'date_of_taxing', 'tax_date')));
+        $idoklad_data['DateOfMaturity'] = $this->normalize_date($this->extract_field($extracted_data, array('DateOfMaturity', 'DueDate', 'MaturityDate', 'date_of_maturity', 'due_date')));
         
         // Partner information - structured for Postman collection workflow
         $idoklad_data['partner_data'] = array(
-            'company' => $this->extract_field($extracted_data, array('CompanyName', 'SupplierCompany', 'PartnerCompany', 'PartnerName', 'SupplierName')),
-            'email' => $this->extract_field($extracted_data, array('Email', 'PartnerEmail', 'SupplierEmail', 'ContactEmail')),
-            'address' => $this->extract_field($extracted_data, array('Address', 'PartnerAddress', 'SupplierAddress', 'Street')),
-            'city' => $this->extract_field($extracted_data, array('City', 'PartnerCity', 'SupplierCity')),
-            'postal_code' => $this->extract_field($extracted_data, array('PostalCode', 'PartnerPostalCode', 'SupplierPostalCode', 'ZipCode'))
+            'company' => $this->extract_field($extracted_data, array('CompanyName', 'SupplierCompany', 'PartnerCompany', 'PartnerName', 'SupplierName', 'company_name', 'supplier_name')),
+            'email' => $this->extract_field($extracted_data, array('Email', 'PartnerEmail', 'SupplierEmail', 'ContactEmail', 'email')),
+            'address' => $this->extract_field($extracted_data, array('Address', 'PartnerAddress', 'SupplierAddress', 'Street', 'address', 'street')),
+            'city' => $this->extract_field($extracted_data, array('City', 'PartnerCity', 'SupplierCity', 'city')),
+            'postal_code' => $this->extract_field($extracted_data, array('PostalCode', 'PartnerPostalCode', 'SupplierPostalCode', 'ZipCode', 'postal_code', 'zip'))
         );
         
         // Keep legacy fields for backward compatibility
         $idoklad_data['PartnerName'] = $idoklad_data['partner_data']['company'];
         $idoklad_data['PartnerAddress'] = $idoklad_data['partner_data']['address'];
-        $idoklad_data['PartnerIdentificationNumber'] = $this->extract_field($extracted_data, array('VatNumber', 'PartnerVatNumber', 'SupplierVatNumber', 'VatIdentificationNumber'));
+        $idoklad_data['PartnerIdentificationNumber'] = $this->extract_field($extracted_data, array('VatNumber', 'PartnerVatNumber', 'SupplierVatNumber', 'VatIdentificationNumber', 'vat_number', 'vatid'));
         
         // Financial information
-        $idoklad_data['CurrencyId'] = $this->get_currency_id($this->extract_field($extracted_data, array('Currency', 'CurrencyCode')));
-        $idoklad_data['ExchangeRate'] = floatval($this->extract_field($extracted_data, array('ExchangeRate', 'Rate'))) ?: 1.0;
-        $idoklad_data['ExchangeRateAmount'] = floatval($this->extract_field($extracted_data, array('ExchangeRateAmount'))) ?: 1.0;
+        $idoklad_data['CurrencyId'] = $this->get_currency_id($this->extract_field($extracted_data, array('Currency', 'CurrencyCode', 'currency')));
+        $idoklad_data['ExchangeRate'] = floatval($this->extract_field($extracted_data, array('ExchangeRate', 'Rate', 'exchange_rate'))) ?: 1.0;
+        $idoklad_data['ExchangeRateAmount'] = floatval($this->extract_field($extracted_data, array('ExchangeRateAmount', 'exchange_rate_amount'))) ?: 1.0;
         
         // Payment information
-        $idoklad_data['VariableSymbol'] = $this->extract_field($extracted_data, array('VariableSymbol', 'VS', 'VariableSym'));
-        $idoklad_data['ConstantSymbol'] = $this->extract_field($extracted_data, array('ConstantSymbol', 'KS', 'ConstantSym'));
-        $idoklad_data['SpecificSymbol'] = $this->extract_field($extracted_data, array('SpecificSymbol', 'SS', 'SpecificSym'));
+        $idoklad_data['VariableSymbol'] = $this->extract_field($extracted_data, array('VariableSymbol', 'VS', 'VariableSym', 'variable_symbol'));
+        $idoklad_data['ConstantSymbol'] = $this->extract_field($extracted_data, array('ConstantSymbol', 'KS', 'ConstantSym', 'constant_symbol'));
+        $idoklad_data['SpecificSymbol'] = $this->extract_field($extracted_data, array('SpecificSymbol', 'SS', 'SpecificSym', 'specific_symbol'));
         
         // Bank account
-        $idoklad_data['BankAccountNumber'] = $this->extract_field($extracted_data, array('BankAccountNumber', 'AccountNumber', 'Account'));
-        $idoklad_data['Iban'] = $this->extract_field($extracted_data, array('Iban', 'IBAN'));
-        $idoklad_data['Swift'] = $this->extract_field($extracted_data, array('Swift', 'SWIFT', 'Bic', 'BIC'));
+        $idoklad_data['BankAccountNumber'] = $this->extract_field($extracted_data, array('BankAccountNumber', 'AccountNumber', 'Account', 'bank_account', 'bank_account_number'));
+        $idoklad_data['Iban'] = $this->extract_field($extracted_data, array('Iban', 'IBAN', 'iban'));
+        $idoklad_data['Swift'] = $this->extract_field($extracted_data, array('Swift', 'SWIFT', 'Bic', 'BIC', 'swift'));
         
         // Description and notes
-        $idoklad_data['Description'] = $this->extract_field($extracted_data, array('Description', 'Note', 'Comments'));
-        $idoklad_data['Note'] = $this->extract_field($extracted_data, array('Note', 'Comments', 'Description'));
+        $idoklad_data['Description'] = $this->extract_field($extracted_data, array('Description', 'Note', 'Comments', 'description'));
+        $idoklad_data['Note'] = $this->extract_field($extracted_data, array('Note', 'Comments', 'Description', 'note'));
         
         // Items processing
         $idoklad_data['Items'] = $this->process_items($extracted_data);
@@ -344,20 +361,29 @@ class IDokladProcessor_PDFCoAIParserEnhanced {
         
         $items = array();
         
-        if (isset($extracted_data['Items']) && is_array($extracted_data['Items'])) {
-            foreach ($extracted_data['Items'] as $item) {
+        $raw_items = $this->extract_field($extracted_data, array('Items', 'items', 'LineItems', 'lines', 'InvoiceItems'));
+
+        if (is_string($raw_items)) {
+            $decoded = json_decode($raw_items, true);
+            if (json_last_error() === JSON_ERROR_NONE) {
+                $raw_items = $decoded;
+            }
+        }
+
+        if (isset($raw_items) && is_array($raw_items)) {
+            foreach ($raw_items as $item) {
                 if (!is_array($item)) continue;
-                
+
                 $processed_item = array(
-                    'Name' => $this->extract_field($item, array('Name', 'Description', 'Product', 'Service')),
-                    'Unit' => $this->extract_field($item, array('Unit', 'UnitOfMeasure', 'UOM')) ?: 'pcs',
-                    'Amount' => floatval($this->extract_field($item, array('Amount', 'Quantity', 'Qty'))) ?: 1.0,
-                    'UnitPrice' => floatval($this->extract_field($item, array('UnitPrice', 'Price', 'Rate'))) ?: 0.0,
+                    'Name' => $this->extract_field($item, array('Name', 'Description', 'Product', 'Service', 'item_name')),
+                    'Unit' => $this->extract_field($item, array('Unit', 'UnitOfMeasure', 'UOM', 'unit')) ?: 'pcs',
+                    'Amount' => floatval($this->extract_field($item, array('Amount', 'Quantity', 'Qty', 'amount'))) ?: 1.0,
+                    'UnitPrice' => floatval($this->extract_field($item, array('UnitPrice', 'Price', 'Rate', 'unit_price'))) ?: 0.0,
                     'PriceType' => 1, // With VAT
                     'VatRateType' => 2, // Standard rate
-                    'VatRate' => floatval($this->extract_field($item, array('VatRate', 'TaxRate'))) ?: 0.0,
+                    'VatRate' => floatval($this->extract_field($item, array('VatRate', 'TaxRate', 'vat_rate'))) ?: 0.0,
                     'IsTaxMovement' => false,
-                    'DiscountPercentage' => floatval($this->extract_field($item, array('DiscountPercentage', 'Discount'))) ?: 0.0
+                    'DiscountPercentage' => floatval($this->extract_field($item, array('DiscountPercentage', 'Discount', 'discount_percentage'))) ?: 0.0
                 );
                 
                 // Only add item if it has a name
@@ -473,12 +499,61 @@ class IDokladProcessor_PDFCoAIParserEnhanced {
      * Extract field value using multiple possible field names
      */
     private function extract_field($data, $possible_fields) {
+        if (!is_array($data)) {
+            return null;
+        }
+
         foreach ($possible_fields as $field) {
-            if (isset($data[$field]) && !empty($data[$field])) {
+            if (isset($data[$field]) && !$this->is_value_empty($data[$field])) {
                 return $data[$field];
             }
         }
+
+        $normalized_map = array();
+
+        foreach ($data as $key => $value) {
+            if ($this->is_value_empty($value)) {
+                continue;
+            }
+
+            $lower_key = strtolower($key);
+            $normalized_map[$lower_key] = $value;
+            $stripped_key = strtolower(preg_replace('/[\s_\-]/', '', $key));
+            $normalized_map[$stripped_key] = $value;
+        }
+
+        foreach ($possible_fields as $field) {
+            $lower = strtolower($field);
+            if (isset($normalized_map[$lower])) {
+                return $normalized_map[$lower];
+            }
+
+            $stripped = strtolower(preg_replace('/[\s_\-]/', '', $field));
+            if (isset($normalized_map[$stripped])) {
+                return $normalized_map[$stripped];
+            }
+        }
+
         return null;
+    }
+
+    /**
+     * Determine if value should be treated as empty
+     */
+    private function is_value_empty($value) {
+        if ($value === null) {
+            return true;
+        }
+
+        if (is_string($value)) {
+            return trim($value) === '';
+        }
+
+        if (is_array($value)) {
+            return empty($value);
+        }
+
+        return false;
     }
     
     /**
