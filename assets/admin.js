@@ -238,7 +238,61 @@ jQuery(document).ready(function($) {
     $('#export-logs').on('click', function() {
         window.location.href = idoklad_ajax.ajax_url + '?action=idoklad_export_logs&nonce=' + idoklad_ajax.nonce;
     });
-    
+
+    $(document).on('click', '.export-log', function() {
+        const logId = $(this).data('log-id');
+
+        if (!logId) {
+            alert('Error: Missing log identifier.');
+            return;
+        }
+
+        window.location.href = idoklad_ajax.ajax_url + '?action=idoklad_export_log_entry&nonce=' + idoklad_ajax.nonce + '&log_id=' + logId;
+    });
+
+    $(document).on('click', '.delete-log', function() {
+        const button = $(this);
+        const logId = button.data('log-id');
+
+        if (!logId) {
+            alert('Error: Missing log identifier.');
+            return;
+        }
+
+        if (!confirm('Delete this log entry? This action cannot be undone.')) {
+            return;
+        }
+
+        const originalText = button.text();
+        button.prop('disabled', true).text('Deleting...');
+
+        $.ajax({
+            url: idoklad_ajax.ajax_url,
+            type: 'POST',
+            data: {
+                action: 'idoklad_delete_log',
+                log_id: logId,
+                nonce: idoklad_ajax.nonce
+            },
+            success: function(response) {
+                if (response && response.success) {
+                    const row = button.closest('tr');
+                    row.fadeOut(300, function() {
+                        $(this).remove();
+                    });
+                } else {
+                    const message = response && response.data ? response.data.message || response.data : 'Failed to delete log entry.';
+                    alert('Error: ' + message);
+                    button.prop('disabled', false).text(originalText);
+                }
+            },
+            error: function() {
+                alert('Error: Failed to delete log entry.');
+                button.prop('disabled', false).text(originalText);
+            }
+        });
+    });
+
     // Real-time status updates
     if (typeof idoklad_ajax !== 'undefined' && idoklad_ajax.ajax_url) {
         setInterval(function() {

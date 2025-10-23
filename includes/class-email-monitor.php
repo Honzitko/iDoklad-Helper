@@ -731,20 +731,31 @@ class IDokladProcessor_EmailMonitor {
         ));
 
         $idoklad_response = $idoklad_api->create_invoice($invoice_context);
+        $normalized_response = $this->normalize_idoklad_response($idoklad_response);
 
-        $status_code = (int) ($idoklad_response['StatusCode'] ?? 0);
+        $status_code = (int) ($normalized_response['StatusCode'] ?? 0);
 
-        if ($status_code >= 400 || empty($idoklad_response)) {
+        if ($status_code >= 400 || empty($normalized_response)) {
+            $message = isset($normalized_response['Message']) ? trim((string) $normalized_response['Message']) : '';
+
+            if ($message === '' && is_array($idoklad_response) && isset($idoklad_response['Message'])) {
+                $message = trim((string) $idoklad_response['Message']);
+            }
+
+            if ($message === '') {
+                $message = 'Failed to create invoice in iDoklad';
+            }
+
             IDokladProcessor_Database::add_queue_step($email->id, 'ERROR: Failed to create invoice in iDoklad', array(
                 'status_code' => $status_code,
-                'message' => $idoklad_response['Message'] ?? null,
+                'message' => $message,
             ));
-            throw new Exception($idoklad_response['Message'] ?? 'Failed to create invoice in iDoklad');
+            throw new Exception($message);
         }
 
         IDokladProcessor_Database::add_queue_step($email->id, 'Issued invoice created in iDoklad successfully', array(
-            'invoice_id' => $idoklad_response['Data']['Id'] ?? null,
-            'document_number' => $idoklad_response['Data']['DocumentNumber'] ?? null,
+            'invoice_id' => $normalized_response['Data']['Id'] ?? null,
+            'document_number' => $normalized_response['Data']['DocumentNumber'] ?? null,
             'status_code' => $status_code
         ));
 
@@ -755,7 +766,7 @@ class IDokladProcessor_EmailMonitor {
                     'subject' => $email->email_subject,
                     'email_id' => $email->email_id ?? $email->id,
                     'received_at' => function_exists('current_time') ? current_time('mysql') : date('Y-m-d H:i:s'),
-                    'document_number' => $idoklad_data['DocumentNumber'] ?? ($idoklad_response['Data']['DocumentNumber'] ?? null),
+                    'document_number' => $idoklad_data['DocumentNumber'] ?? ($normalized_response['Data']['DocumentNumber'] ?? null),
                     'notes' => 'Invoice created successfully',
                 ),
                 $attachment_info,
@@ -768,11 +779,11 @@ class IDokladProcessor_EmailMonitor {
         }
 
         // Step 9: Update log with success
-        $this->update_log_for_email($email, 'success', $extracted_data, $idoklad_response);
-        
+        $this->update_log_for_email($email, 'success', $extracted_data, $normalized_response);
+
         // Step 10: Send success notification
         IDokladProcessor_Database::add_queue_step($email->id, 'Sending success notification');
-        $notification->send_success_notification($email->email_from, $extracted_data, $idoklad_response);
+        $notification->send_success_notification($email->email_from, $extracted_data, $normalized_response);
         
         // Step 11: Clean up PDF file
         IDokladProcessor_Database::add_queue_step($email->id, 'Cleaning up PDF file');
@@ -834,26 +845,109 @@ class IDokladProcessor_EmailMonitor {
             'processing_status' => $status,
             'processed_at' => current_time('mysql')
         );
-        
-        if ($extracted_data) {
-            $update_data['extracted_data'] = json_encode($extracted_data);
+        $formats = array('%s', '%s');
+
+        if ($extracted_data !== null) {
+            $encoded = wp_json_encode($extracted_data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            if (false === $encoded) {
+                $encoded = json_encode($extracted_data);
+            }
+            $update_data['extracted_data'] = $encoded;
+            $formats[] = '%s';
         }
-        
-        if ($idoklad_response) {
-            $update_data['idoklad_response'] = json_encode($idoklad_response);
+
+        if ($idoklad_response !== null) {
+            $encoded_response = wp_json_encode($idoklad_response, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            if (false === $encoded_response) {
+                $encoded_response = json_encode($idoklad_response);
+            }
+            $update_data['idoklad_response'] = $encoded_response;
+            $formats[] = '%s';
         }
-        
-        if ($error_message) {
+
+        if ($error_message !== null) {
             $update_data['error_message'] = $error_message;
+            $formats[] = '%s';
         }
-        
+
         $wpdb->update(
             $table,
             $update_data,
             array('email_from' => $email->email_from, 'email_subject' => $email->email_subject),
-            array('%s', '%s', '%s', '%s', '%s'),
+            $formats,
             array('%s', '%s')
         );
+    }
+
+    /**
+     * Normalize the iDoklad API response so it can be stored and displayed consistently.
+     *
+     * @param mixed $response
+     * @return array
+     */
+    private function normalize_idoklad_response($response) {
+        if ($response === null) {
+            return array();
+        }
+
+        if (is_string($response)) {
+            $decoded = json_decode($response, true);
+            if (json_last_error() === JSON_ERROR_NONE) {
+                $response = $decoded;
+            } else {
+                return array('raw' => $response);
+            }
+        }
+
+        if (!is_array($response)) {
+            return array();
+        }
+
+        $normalized = $response;
+
+        if (isset($response['RawResponse']) && is_array($response['RawResponse'])) {
+            $normalized = $response['RawResponse'];
+
+            if (!isset($normalized['StatusCode']) && isset($response['StatusCode'])) {
+                $normalized['StatusCode'] = $response['StatusCode'];
+            }
+
+            if (!isset($normalized['Message']) && isset($response['Message'])) {
+                $normalized['Message'] = $response['Message'];
+            }
+        }
+
+        if (!isset($normalized['StatusCode']) && isset($response['StatusCode'])) {
+            $normalized['StatusCode'] = $response['StatusCode'];
+        }
+
+        if (!isset($normalized['Data']) && isset($response['Data'])) {
+            $normalized['Data'] = $response['Data'];
+        }
+
+        if (!isset($normalized['ErrorCode']) && isset($response['ErrorCode'])) {
+            $normalized['ErrorCode'] = $response['ErrorCode'];
+        }
+
+        $status_code = isset($normalized['StatusCode']) ? (int) $normalized['StatusCode'] : 0;
+
+        if (!isset($normalized['ErrorCode'])) {
+            $normalized['ErrorCode'] = $status_code >= 400 ? $status_code : 0;
+        }
+
+        if (!isset($normalized['IsSuccess']) && isset($response['IsSuccess'])) {
+            $normalized['IsSuccess'] = $response['IsSuccess'];
+        }
+
+        if (!isset($normalized['IsSuccess'])) {
+            $normalized['IsSuccess'] = $status_code > 0 ? $status_code < 400 : !empty($normalized);
+        }
+
+        if (!isset($normalized['Message'])) {
+            $normalized['Message'] = isset($response['Message']) ? $response['Message'] : '';
+        }
+
+        return $normalized;
     }
     
     /**

@@ -69,12 +69,25 @@ class IDokladProcessor_Notification {
      * Build success message HTML
      */
     private function build_success_message($extracted_data, $idoklad_response) {
-        $invoice_id = isset($idoklad_response['Id']) ? $idoklad_response['Id'] : 'N/A';
+        $response_data = array();
+
+        if (isset($idoklad_response['Data']) && is_array($idoklad_response['Data'])) {
+            $response_data = $idoklad_response['Data'];
+        } elseif (is_array($idoklad_response)) {
+            $response_data = $idoklad_response;
+        }
+
+        $invoice_id = isset($response_data['Id']) ? $response_data['Id'] : 'N/A';
         $invoice_number = isset($extracted_data['invoice_number']) ? $extracted_data['invoice_number'] : 'N/A';
+
+        if ($invoice_number === 'N/A' && isset($response_data['DocumentNumber'])) {
+            $invoice_number = $response_data['DocumentNumber'];
+        }
+
         $supplier_name = isset($extracted_data['supplier_name']) ? $extracted_data['supplier_name'] : 'N/A';
         $total_amount = isset($extracted_data['total_amount']) ? $extracted_data['total_amount'] : 'N/A';
         $currency = isset($extracted_data['currency']) ? $extracted_data['currency'] : 'CZK';
-        
+
         $message = '<html><body>';
         $message .= '<h2>' . __('Invoice Successfully Processed', 'idoklad-invoice-processor') . '</h2>';
         $message .= '<p>' . __('Your invoice has been successfully processed and added to iDoklad.', 'idoklad-invoice-processor') . '</p>';
