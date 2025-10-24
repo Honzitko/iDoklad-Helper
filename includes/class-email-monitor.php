@@ -34,28 +34,63 @@ class IDokladProcessor_EmailMonitor {
      * Check for new emails and process them
      */
     public function check_for_new_emails() {
+        return $this->check_emails();
+    }
+
+    /**
+     * Shared email check implementation used by cron and manual trigger
+     */
+    public function check_emails() {
+        $result = array(
+            'success' => true,
+            'emails_found' => 0,
+            'pdfs_processed' => 0,
+            'queue_items_added' => 0,
+            'message' => ''
+        );
+
         if (get_option('idoklad_debug_mode')) {
             error_log('iDoklad Email Monitor: Starting email check');
         }
-        
+
         try {
             $this->connect_to_email();
             $emails = $this->get_unread_emails();
-            
+            $result['emails_found'] = count($emails);
+
             if (get_option('idoklad_debug_mode')) {
-                error_log('iDoklad Email Monitor: Found ' . count($emails) . ' unread emails');
+                error_log('iDoklad Email Monitor: Found ' . $result['emails_found'] . ' unread emails');
             }
-            
+
             foreach ($emails as $email_id) {
-                $this->process_email($email_id);
+                $email_result = $this->process_email($email_id);
+                $result['pdfs_processed'] += $email_result['pdfs_processed'];
+                $result['queue_items_added'] += $email_result['queue_items_added'];
             }
-            
+
             $this->disconnect_from_email();
-            
+
+            if ($result['emails_found'] === 0) {
+                $result['message'] = __('No new emails found.', 'idoklad-invoice-processor');
+            } elseif ($result['pdfs_processed'] === 0) {
+                $result['message'] = __('No PDF attachments were found in the unread emails.', 'idoklad-invoice-processor');
+            } else {
+                $result['message'] = sprintf(
+                    __('Processed %1$d PDF attachments from %2$d email(s).', 'idoklad-invoice-processor'),
+                    $result['pdfs_processed'],
+                    $result['emails_found']
+                );
+            }
+
         } catch (Exception $e) {
+            $result['success'] = false;
+            $result['message'] = $e->getMessage();
+
             error_log('iDoklad Email Monitor Error: ' . $e->getMessage());
             $this->send_error_notification('Email monitoring failed: ' . $e->getMessage());
         }
+
+        return $result;
     }
     
     /**
@@ -110,10 +145,15 @@ class IDokladProcessor_EmailMonitor {
      * Process individual email
      */
     private function process_email($email_id) {
+        $email_result = array(
+            'pdfs_processed' => 0,
+            'queue_items_added' => 0
+        );
+
         if (get_option('idoklad_debug_mode')) {
             error_log('iDoklad Email Monitor: Processing email ID ' . $email_id);
         }
-        
+
         try {
             // Get email header
             $header = imap_headerinfo($this->connection, $email_id);
@@ -142,12 +182,12 @@ class IDokladProcessor_EmailMonitor {
                     'error_message' => 'Unauthorized sender'
                 ));
                 
-                return;
+                return $email_result;
             }
-            
+
             // Get email attachments
             $attachments = $this->get_email_attachments($email_id);
-            
+
             if (empty($attachments)) {
                 if (get_option('idoklad_debug_mode')) {
                     error_log('iDoklad Email Monitor: No attachments found in email from ' . $from_email);
@@ -164,22 +204,27 @@ class IDokladProcessor_EmailMonitor {
                     'error_message' => 'No PDF attachments found'
                 ));
                 
-                return;
+                return $email_result;
             }
-            
+
             // Process each PDF attachment
             foreach ($attachments as $attachment) {
                 if ($this->is_pdf_attachment($attachment)) {
-                    $this->process_pdf_attachment($email_id, $from_email, $subject, $attachment, $authorized_user);
+                    if ($this->process_pdf_attachment($email_id, $from_email, $subject, $attachment, $authorized_user)) {
+                        $email_result['pdfs_processed']++;
+                        $email_result['queue_items_added']++;
+                    }
                 }
             }
-            
+
             // Mark email as read
             imap_setflag_full($this->connection, $email_id, '\\Seen');
-            
+
+            return $email_result;
+
         } catch (Exception $e) {
             error_log('iDoklad Email Monitor: Error processing email ' . $email_id . ': ' . $e->getMessage());
-            
+
             // Log error
             IDokladProcessor_Database::add_log(array(
                 'email_from' => isset($from_email) ? $from_email : 'unknown',
@@ -188,6 +233,8 @@ class IDokladProcessor_EmailMonitor {
                 'error_message' => $e->getMessage()
             ));
         }
+
+        return $email_result;
     }
     
     /**
@@ -301,8 +348,12 @@ class IDokladProcessor_EmailMonitor {
             'attachment_path' => $file_path
         );
         
-        IDokladProcessor_Database::add_to_queue($queue_data);
-        
+        $queue_inserted = IDokladProcessor_Database::add_to_queue($queue_data);
+
+        if (!$queue_inserted) {
+            throw new Exception('Failed to add PDF attachment to the processing queue');
+        }
+
         // Log processing start
         $log_id = IDokladProcessor_Database::add_log(array(
             'email_from' => $from_email,
@@ -310,10 +361,12 @@ class IDokladProcessor_EmailMonitor {
             'attachment_name' => $attachment['filename'],
             'processing_status' => 'pending'
         ));
-        
+
         if (get_option('idoklad_debug_mode')) {
             error_log('iDoklad Email Monitor: Added to queue - Email: ' . $from_email . ', File: ' . $attachment['filename']);
         }
+
+        return true;
     }
     
     /**

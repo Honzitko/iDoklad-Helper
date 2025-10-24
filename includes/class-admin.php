@@ -1918,13 +1918,9 @@ class IDokladProcessor_Admin {
             // Force email check
             $result = $email_monitor->check_emails();
             
-            if ($result['success']) {
-                $message = sprintf(
-                    __('Email check completed. Found %d new emails, %d PDFs processed.', 'idoklad-invoice-processor'),
-                    $result['emails_found'] ?? 0,
-                    $result['pdfs_processed'] ?? 0
-                );
-                
+            if (!empty($result['success'])) {
+                $message = $result['message'] ?? __('Email check completed.', 'idoklad-invoice-processor');
+
                 wp_send_json_success(array(
                     'message' => $message,
                     'emails_found' => $result['emails_found'] ?? 0,
