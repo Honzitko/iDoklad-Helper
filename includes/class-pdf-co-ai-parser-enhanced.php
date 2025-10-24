@@ -306,9 +306,17 @@ class IDokladProcessor_PDFCoAIParserEnhanced {
             'email' => $this->extract_field($extracted_data, array('Email', 'PartnerEmail', 'SupplierEmail', 'ContactEmail', 'email')),
             'address' => $this->extract_field($extracted_data, array('Address', 'PartnerAddress', 'SupplierAddress', 'Street', 'address', 'street')),
             'city' => $this->extract_field($extracted_data, array('City', 'PartnerCity', 'SupplierCity', 'city')),
-            'postal_code' => $this->extract_field($extracted_data, array('PostalCode', 'PartnerPostalCode', 'SupplierPostalCode', 'ZipCode', 'postal_code', 'zip'))
+
+            'postal_code' => $this->extract_field($extracted_data, array('PostalCode', 'PartnerPostalCode', 'SupplierPostalCode', 'ZipCode', 'postal_code', 'zip')),
+            'id' => $this->extract_field($extracted_data, array('PartnerId', 'ContactId', 'PartnerID', 'ContactID', 'Id', 'id', 'partner_id', 'contact_id'))
+
         );
-        
+
+        if (!empty($idoklad_data['partner_data']['id']) && is_numeric($idoklad_data['partner_data']['id'])) {
+            $idoklad_data['partner_data']['id'] = intval($idoklad_data['partner_data']['id']);
+            $idoklad_data['PartnerId'] = $idoklad_data['partner_data']['id'];
+        }
+
         // Keep legacy fields for backward compatibility
         $idoklad_data['PartnerName'] = $idoklad_data['partner_data']['company'];
         $idoklad_data['PartnerAddress'] = $idoklad_data['partner_data']['address'];

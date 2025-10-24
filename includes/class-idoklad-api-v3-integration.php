@@ -124,8 +124,22 @@ class IDokladProcessor_IDokladAPIV3Integration {
             return 22429105;
         }
         
+        $direct_partner_id = $this->extract_direct_partner_id($invoice_data);
+
+        if ($direct_partner_id) {
+            $this->logger->info('Partner ID provided in invoice data: ' . $direct_partner_id);
+            return $direct_partner_id;
+        }
+
         $partner_data = $invoice_data['partner_data'];
-        
+
+        $existing_partner_id = $this->find_existing_partner($partner_data);
+
+        if ($existing_partner_id) {
+            $this->logger->info('Using existing partner ID: ' . $existing_partner_id);
+            return $existing_partner_id;
+        }
+
         // Build partner payload exactly as in Postman collection
         $partner_payload = array(
             'CompanyName' => $partner_data['company'] ?? 'AUTO TEST COMPANY s.r.o.',
@@ -624,7 +638,239 @@ class IDokladProcessor_IDokladAPIV3Integration {
             'raw_body' => $response_body
         );
     }
-    
+
+    /**
+     * Extract partner ID directly supplied within invoice data structure
+     */
+    private function extract_direct_partner_id($invoice_data) {
+        if (empty($invoice_data) || !is_array($invoice_data)) {
+            return null;
+        }
+
+        $candidate_values = array();
+
+        if (isset($invoice_data['partner_data']) && is_array($invoice_data['partner_data'])) {
+            $partner_candidates = array('id', 'Id', 'ID', 'partner_id', 'PartnerId', 'PartnerID', 'contact_id', 'ContactId', 'ContactID');
+
+            foreach ($partner_candidates as $key) {
+                if (isset($invoice_data['partner_data'][$key])) {
+                    $candidate_values[] = $invoice_data['partner_data'][$key];
+                }
+            }
+        }
+
+        $top_level_candidates = array('PartnerId', 'partner_id', 'ContactId', 'contact_id');
+
+        foreach ($top_level_candidates as $key) {
+            if (isset($invoice_data[$key])) {
+                $candidate_values[] = $invoice_data[$key];
+            }
+        }
+
+        foreach ($candidate_values as $value) {
+            $normalized = $this->normalize_partner_id($value);
+            if ($normalized) {
+                return $normalized;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Attempt to find an existing partner before creating a new one
+     */
+    private function find_existing_partner($partner_data) {
+        if (empty($partner_data) || !is_array($partner_data)) {
+            return null;
+        }
+
+        $lookup_fields = array();
+
+        if (!empty($partner_data['email'])) {
+            $lookup_fields[] = array('field' => 'Email', 'value' => $partner_data['email']);
+        }
+
+        if (!empty($partner_data['company'])) {
+            $lookup_fields[] = array('field' => 'CompanyName', 'value' => $partner_data['company']);
+        }
+
+        if (empty($lookup_fields)) {
+            return null;
+        }
+
+        foreach ($lookup_fields as $criteria) {
+            $value = is_string($criteria['value']) ? trim($criteria['value']) : $criteria['value'];
+
+            if (empty($value)) {
+                continue;
+            }
+
+            $filter_value = $criteria['field'] . '~eq~' . $value;
+            $query = http_build_query(array('filter' => $filter_value));
+            $url = $this->base_url . '/Contacts?' . $query;
+
+            $this->logger->info('Searching for existing partner using ' . strtolower($criteria['field']) . ': ' . $value);
+
+            $args = array(
+                'method' => 'GET',
+                'headers' => array(
+                    'Authorization' => 'Bearer ' . $this->access_token,
+                    'Content-Type' => 'application/json'
+                ),
+                'timeout' => 30
+            );
+
+            $response = wp_remote_request($url, $args);
+
+            if (is_wp_error($response)) {
+                $error_message = $response->get_error_message();
+                $this->log_partner_lookup($criteria, null, 0, $error_message);
+                continue;
+            }
+
+            $status_code = wp_remote_retrieve_response_code($response);
+            $response_body = wp_remote_retrieve_body($response);
+            $response_data = json_decode($response_body, true);
+
+            $this->log_partner_lookup($criteria, $response_data, $status_code);
+
+            if ($status_code !== 200 || empty($response_data)) {
+                continue;
+            }
+
+            $records = $this->gather_partner_records_with_ids($response_data);
+
+            if (empty($records)) {
+                continue;
+            }
+
+            $normalized_lookup_value = $criteria['field'] === 'Email'
+                ? $this->normalize_email($value)
+                : strtolower($value);
+
+            foreach ($records as $record) {
+                $partner_id = $this->extract_partner_id_from_record($record);
+
+                if (!$partner_id) {
+                    continue;
+                }
+
+                if ($criteria['field'] === 'Email') {
+                    $record_email = $this->normalize_email($record['Email'] ?? $record['email'] ?? null);
+                    if ($record_email && $record_email === $normalized_lookup_value) {
+                        return $partner_id;
+                    }
+                } else {
+                    $record_company = strtolower(trim($record['CompanyName'] ?? $record['companyName'] ?? $record['Company'] ?? ''));
+                    if (!empty($record_company) && $record_company === $normalized_lookup_value) {
+                        return $partner_id;
+                    }
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Normalize partner ID values
+     */
+    private function normalize_partner_id($value) {
+        if ($value === null) {
+            return null;
+        }
+
+        if (is_string($value)) {
+            $value = trim($value);
+        }
+
+        if ($value === '' || !is_numeric($value)) {
+            return null;
+        }
+
+        $int_value = intval($value);
+
+        return $int_value > 0 ? $int_value : null;
+    }
+
+    /**
+     * Normalize email for comparison
+     */
+    private function normalize_email($email) {
+        if (empty($email) || !is_string($email)) {
+            return null;
+        }
+
+        return strtolower(trim($email));
+    }
+
+    /**
+     * Extract unique partner records containing IDs from response data
+     */
+    private function gather_partner_records_with_ids($data) {
+        if (!is_array($data)) {
+            return array();
+        }
+
+        $records = array();
+        $stack = array($data);
+
+        while (!empty($stack)) {
+            $current = array_pop($stack);
+
+            if (!is_array($current)) {
+                continue;
+            }
+
+            if ($this->extract_partner_id_from_record($current)) {
+                $records[] = $current;
+            }
+
+            foreach ($current as $value) {
+                if (is_array($value)) {
+                    $stack[] = $value;
+                }
+            }
+        }
+
+        $unique_records = array();
+        $seen_ids = array();
+
+        foreach ($records as $record) {
+            $partner_id = $this->extract_partner_id_from_record($record);
+
+            if ($partner_id && !isset($seen_ids[$partner_id])) {
+                $seen_ids[$partner_id] = true;
+                $unique_records[] = $record;
+            }
+        }
+
+        return $unique_records;
+    }
+
+    /**
+     * Extract partner ID from a record structure
+     */
+    private function extract_partner_id_from_record($record) {
+        if (!is_array($record)) {
+            return null;
+        }
+
+        $candidate_keys = array('Id', 'id', 'ID', 'PartnerId', 'partner_id', 'PartnerID', 'ContactId', 'contact_id', 'ContactID');
+
+        foreach ($candidate_keys as $key) {
+            if (isset($record[$key])) {
+                $normalized = $this->normalize_partner_id($record[$key]);
+                if ($normalized) {
+                    return $normalized;
+                }
+            }
+        }
+
+        return null;
+    }
+
     /**
      * Log iDoklad API response to database
      */
@@ -662,7 +908,19 @@ class IDokladProcessor_IDokladAPIV3Integration {
     public function log_invoice_creation($invoice_data, $response_data, $status_code, $error_message = null) {
         $this->log_api_response('invoice_creation', $invoice_data, $response_data, $status_code, $error_message);
     }
-    
+
+    /**
+     * Log partner lookup attempts with detailed response data
+     */
+    public function log_partner_lookup($criteria, $response_data, $status_code, $error_message = null) {
+        $request_data = array(
+            'lookup_field' => $criteria['field'] ?? '',
+            'lookup_value' => $criteria['value'] ?? ''
+        );
+
+        $this->log_api_response('partner_lookup', $request_data, $response_data, $status_code, $error_message);
+    }
+
     /**
      * Log partner creation with detailed response data
      */
