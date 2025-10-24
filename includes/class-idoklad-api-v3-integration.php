@@ -510,42 +510,65 @@ class IDokladProcessor_IDokladAPIV3Integration {
         $serial = $numeric_sequence_data['DocumentSerialNumber'];
         $year = date('Y');
 
-        return array(
+        $document_number = $this->get_invoice_value($invoice_data, array('DocumentNumber', 'document_number', 'InvoiceNumber', 'invoice_number'));
+        if (empty($document_number)) {
+            $document_number = $year . str_pad($serial, 4, '0', STR_PAD_LEFT);
+        }
+
+        $order_number = $this->get_invoice_value($invoice_data, array('OrderNumber', 'order_number'));
+        if (empty($order_number)) {
+            $order_number = 'PO-' . $year . '-' . str_pad($serial, 2, '0', STR_PAD_LEFT);
+        }
+
+        $payload = array(
             'PartnerId' => $partner_id,
-            'Description' => isset($invoice_data['description']) ? $invoice_data['description'] : 'Invoice created via API integration',
-            'Note' => isset($invoice_data['note']) ? $invoice_data['note'] : 'Automatic invoice created through API integration',
-            'OrderNumber' => isset($invoice_data['order_number']) ? $invoice_data['order_number'] : 'PO-' . $year . '-' . str_pad($serial, 2, '0', STR_PAD_LEFT),
-            'VariableSymbol' => isset($invoice_data['variable_symbol']) ? $invoice_data['variable_symbol'] : $year . str_pad($serial, 4, '0', STR_PAD_LEFT),
-            
-            'DateOfIssue' => isset($invoice_data['date_of_issue']) ? $invoice_data['date_of_issue'] : $current_date,
-            'DateOfTaxing' => isset($invoice_data['date_of_taxing']) ? $invoice_data['date_of_taxing'] : $current_date,
-            'DateOfMaturity' => $maturity_date,
-            'DateOfAccountingEvent' => isset($invoice_data['date_of_accounting_event']) ? $invoice_data['date_of_accounting_event'] : $current_date,
-            'DateOfVatApplication' => isset($invoice_data['date_of_vat_application']) ? $invoice_data['date_of_vat_application'] : $current_date,
-            
-            'CurrencyId' => isset($invoice_data['currency_id']) ? $invoice_data['currency_id'] : 1,
-            'ExchangeRate' => isset($invoice_data['exchange_rate']) ? $invoice_data['exchange_rate'] : 1.0,
-            'ExchangeRateAmount' => isset($invoice_data['exchange_rate_amount']) ? $invoice_data['exchange_rate_amount'] : 1.0,
-            
-            'PaymentOptionId' => isset($invoice_data['payment_option_id']) ? $invoice_data['payment_option_id'] : 1,
-            'ConstantSymbolId' => isset($invoice_data['constant_symbol_id']) ? $invoice_data['constant_symbol_id'] : 7,
-            
+            'Description' => $this->get_invoice_value($invoice_data, array('Description', 'description'), 'Invoice created via API integration'),
+            'Note' => $this->get_invoice_value($invoice_data, array('Note', 'note'), 'Automatic invoice created through API integration'),
+            'OrderNumber' => $order_number,
+            'VariableSymbol' => $this->get_invoice_value($invoice_data, array('VariableSymbol', 'variable_symbol'), $document_number),
+
+            'DocumentNumber' => $document_number,
+            'DateOfIssue' => $this->normalize_invoice_date($this->get_invoice_value($invoice_data, array('DateOfIssue', 'date_of_issue', 'IssueDate', 'date')), $current_date),
+            'DateOfTaxing' => $this->normalize_invoice_date($this->get_invoice_value($invoice_data, array('DateOfTaxing', 'date_of_taxing', 'TaxDate')), $current_date),
+            'DateOfMaturity' => $this->normalize_invoice_date($this->get_invoice_value($invoice_data, array('DateOfMaturity', 'date_of_maturity', 'DueDate')), $maturity_date),
+            'DateOfAccountingEvent' => $this->normalize_invoice_date($this->get_invoice_value($invoice_data, array('DateOfAccountingEvent', 'date_of_accounting_event')), $current_date),
+            'DateOfVatApplication' => $this->normalize_invoice_date($this->get_invoice_value($invoice_data, array('DateOfVatApplication', 'date_of_vat_application')), $current_date),
+
+            'CurrencyId' => $this->normalize_currency_id($invoice_data),
+            'ExchangeRate' => (float) $this->get_invoice_value($invoice_data, array('ExchangeRate', 'exchange_rate'), 1.0),
+            'ExchangeRateAmount' => (float) $this->get_invoice_value($invoice_data, array('ExchangeRateAmount', 'exchange_rate_amount'), 1.0),
+
+            'PaymentOptionId' => (int) $this->get_invoice_value($invoice_data, array('PaymentOptionId', 'payment_option_id'), 1),
+            'ConstantSymbolId' => (int) $this->get_invoice_value($invoice_data, array('ConstantSymbolId', 'constant_symbol_id'), 7),
+
             'NumericSequenceId' => $numeric_sequence_data['NumericSequenceId'],
             'DocumentSerialNumber' => $numeric_sequence_data['DocumentSerialNumber'],
-            
-            'IsEet' => isset($invoice_data['is_eet']) ? $invoice_data['is_eet'] : false,
-            'EetResponsibility' => isset($invoice_data['eet_responsibility']) ? $invoice_data['eet_responsibility'] : 0,
-            'IsIncomeTax' => isset($invoice_data['is_income_tax']) ? $invoice_data['is_income_tax'] : true,
-            'VatOnPayStatus' => isset($invoice_data['vat_on_pay_status']) ? $invoice_data['vat_on_pay_status'] : 0,
-            'VatRegime' => isset($invoice_data['vat_regime']) ? $invoice_data['vat_regime'] : 0,
-            'HasVatRegimeOss' => isset($invoice_data['has_vat_regime_oss']) ? $invoice_data['has_vat_regime_oss'] : false,
-            
-            'ItemsTextPrefix' => isset($invoice_data['items_text_prefix']) ? $invoice_data['items_text_prefix'] : 'Invoice items:',
-            'ItemsTextSuffix' => isset($invoice_data['items_text_suffix']) ? $invoice_data['items_text_suffix'] : 'Thanks for your business.',
-            
-            'Items' => isset($invoice_data['items']) ? $invoice_data['items'] : $this->build_default_items(),
-            'ReportLanguage' => isset($invoice_data['report_language']) ? $invoice_data['report_language'] : 1
+
+            'IsEet' => (bool) $this->get_invoice_value($invoice_data, array('IsEet', 'is_eet'), false),
+            'EetResponsibility' => (int) $this->get_invoice_value($invoice_data, array('EetResponsibility', 'eet_responsibility'), 0),
+            'IsIncomeTax' => (bool) $this->get_invoice_value($invoice_data, array('IsIncomeTax', 'is_income_tax'), true),
+            'VatOnPayStatus' => (int) $this->get_invoice_value($invoice_data, array('VatOnPayStatus', 'vat_on_pay_status'), 0),
+            'VatRegime' => (int) $this->get_invoice_value($invoice_data, array('VatRegime', 'vat_regime'), 0),
+            'HasVatRegimeOss' => (bool) $this->get_invoice_value($invoice_data, array('HasVatRegimeOss', 'has_vat_regime_oss'), false),
+
+            'ItemsTextPrefix' => $this->get_invoice_value($invoice_data, array('ItemsTextPrefix', 'items_text_prefix'), 'Invoice items:'),
+            'ItemsTextSuffix' => $this->get_invoice_value($invoice_data, array('ItemsTextSuffix', 'items_text_suffix'), 'Thanks for your business.'),
+
+            'Items' => $this->normalize_invoice_items($invoice_data),
+            'ReportLanguage' => (int) $this->get_invoice_value($invoice_data, array('ReportLanguage', 'report_language'), 1)
         );
+
+        $payment_status = $this->get_invoice_value($invoice_data, array('PaymentStatus', 'payment_status'));
+        if (!$this->is_value_empty($payment_status)) {
+            $payload['PaymentStatus'] = (int) $payment_status;
+        }
+
+        $date_of_payment = $this->get_invoice_value($invoice_data, array('DateOfPayment', 'date_of_payment'));
+        if (!$this->is_value_empty($date_of_payment)) {
+            $payload['DateOfPayment'] = $this->normalize_invoice_date($date_of_payment, null);
+        }
+
+        return $payload;
     }
     
     /**
@@ -565,6 +588,134 @@ class IDokladProcessor_IDokladAPIV3Integration {
                 'DiscountPercentage' => 0.0
             )
         );
+    }
+
+    private function get_invoice_value($data, $keys, $default = null) {
+        if (!is_array($keys)) {
+            $keys = array($keys);
+        }
+
+        if (!is_array($data)) {
+            return $default;
+        }
+
+        foreach ($keys as $key) {
+            if (isset($data[$key]) && !$this->is_value_empty($data[$key])) {
+                return $data[$key];
+            }
+
+            $lower_key = strtolower($key);
+            foreach ($data as $data_key => $value) {
+                if ($this->is_value_empty($value)) {
+                    continue;
+                }
+
+                if (strtolower($data_key) === $lower_key) {
+                    return $value;
+                }
+            }
+        }
+
+        return $default;
+    }
+
+    private function normalize_invoice_date($value, $default = null) {
+        if ($this->is_value_empty($value)) {
+            return $default;
+        }
+
+        $formats = array('Y-m-d', 'd.m.Y', 'd/m/Y', 'm/d/Y', 'Y-m-d H:i:s', 'd.m.Y H:i:s');
+
+        foreach ($formats as $format) {
+            $date = DateTime::createFromFormat($format, $value);
+            if ($date instanceof DateTime) {
+                return $date->format('Y-m-d');
+            }
+        }
+
+        $timestamp = strtotime($value);
+        if ($timestamp !== false) {
+            return date('Y-m-d', $timestamp);
+        }
+
+        return $default ?: $value;
+    }
+
+    private function normalize_currency_id($invoice_data) {
+        $currency_value = $this->get_invoice_value($invoice_data, array('CurrencyId', 'currency_id'));
+
+        if (is_numeric($currency_value)) {
+            return (int) $currency_value;
+        }
+
+        $currency_code = $this->get_invoice_value($invoice_data, array('Currency', 'currency'));
+        $map = array(
+            'CZK' => 1,
+            'EUR' => 2,
+            'USD' => 3,
+            'GBP' => 4
+        );
+
+        if (!empty($currency_code)) {
+            $upper = strtoupper($currency_code);
+            if (isset($map[$upper])) {
+                return $map[$upper];
+            }
+        }
+
+        return 1;
+    }
+
+    private function normalize_invoice_items($invoice_data) {
+        $items = $this->get_invoice_value($invoice_data, array('Items', 'items', 'LineItems', 'line_items'));
+
+        if (!is_array($items) || empty($items)) {
+            return $this->build_default_items();
+        }
+
+        $normalized = array();
+
+        foreach ($items as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+
+            $name = $this->get_invoice_value($item, array('Name', 'name', 'Description', 'description'));
+
+            if ($this->is_value_empty($name)) {
+                continue;
+            }
+
+            $normalized[] = array(
+                'Name' => $name,
+                'Unit' => $this->get_invoice_value($item, array('Unit', 'unit', 'UnitOfMeasure', 'unit_of_measure'), 'pcs'),
+                'Amount' => (float) $this->get_invoice_value($item, array('Amount', 'amount', 'Quantity', 'quantity'), 1.0),
+                'UnitPrice' => (float) $this->get_invoice_value($item, array('UnitPrice', 'unit_price', 'Price', 'price'), 0.0),
+                'PriceType' => (int) $this->get_invoice_value($item, array('PriceType', 'price_type'), 1),
+                'VatRateType' => (int) $this->get_invoice_value($item, array('VatRateType', 'vat_rate_type'), 2),
+                'VatRate' => (float) $this->get_invoice_value($item, array('VatRate', 'vat_rate', 'TaxRate', 'tax_rate'), 0.0),
+                'IsTaxMovement' => (bool) $this->get_invoice_value($item, array('IsTaxMovement', 'is_tax_movement'), false),
+                'DiscountPercentage' => (float) $this->get_invoice_value($item, array('DiscountPercentage', 'discount_percentage'), 0.0)
+            );
+        }
+
+        return !empty($normalized) ? $normalized : $this->build_default_items();
+    }
+
+    private function is_value_empty($value) {
+        if ($value === null) {
+            return true;
+        }
+
+        if (is_string($value)) {
+            return trim($value) === '';
+        }
+
+        if (is_array($value)) {
+            return empty($value);
+        }
+
+        return false;
     }
     
     /**
