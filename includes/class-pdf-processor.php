@@ -36,29 +36,73 @@ class IDokladProcessor_PDFProcessor {
         if (!file_exists($pdf_path)) {
             throw new Exception('PDF file not found: ' . $pdf_path);
         }
-        
+
         if (get_option('idoklad_debug_mode')) {
             error_log('iDoklad PDF Processor: Extracting text from ' . $pdf_path);
         }
-        
+
         // ONLY use PDF.co - NO FALLBACKS!
         // If PDF.co fails, the entire process STOPS
         if ($queue_id) {
             IDokladProcessor_Database::add_queue_step($queue_id, 'PDF Processing: Using PDF.co cloud service', null, false);
         }
-        
+
         require_once IDOKLAD_PROCESSOR_PLUGIN_DIR . 'includes/class-pdfco-processor.php';
         $pdfco = new IDokladProcessor_PDFCoProcessor();
         $text = $pdfco->extract_text($pdf_path, $queue_id);
-        
+
         if (get_option('idoklad_debug_mode')) {
             error_log('iDoklad PDF Processor: PDF.co extracted ' . strlen($text) . ' characters');
         }
-        
+
         // Clean up extracted text
         $text = $this->clean_extracted_text($text);
-        
+
         return $text;
+    }
+
+    /**
+     * Upload PDF to PDF.co and return the temporary file URL.
+     */
+    public function upload_to_pdf_co($pdf_path, $queue_id = null) {
+        if (!file_exists($pdf_path)) {
+            throw new Exception('PDF file not found: ' . $pdf_path);
+        }
+
+        require_once IDOKLAD_PROCESSOR_PLUGIN_DIR . 'includes/class-pdfco-processor.php';
+        $pdfco = new IDokladProcessor_PDFCoProcessor();
+
+        if ($queue_id) {
+            IDokladProcessor_Database::add_queue_step($queue_id, 'Uploading PDF to PDF.co', array(
+                'filename' => basename($pdf_path)
+            ));
+        }
+
+        try {
+            $url = $pdfco->upload_file($pdf_path);
+
+            if ($queue_id) {
+                $logged_url = $url;
+                if (is_string($logged_url) && strlen($logged_url) > 100) {
+                    $logged_url = substr($logged_url, 0, 100) . '…';
+                }
+
+                IDokladProcessor_Database::add_queue_step($queue_id, 'PDF uploaded to PDF.co', array(
+                    'pdf_url' => $logged_url
+                ));
+            }
+
+            return $url;
+
+        } catch (Exception $e) {
+            if ($queue_id) {
+                IDokladProcessor_Database::add_queue_step($queue_id, 'PDF.co upload failed', array(
+                    'error' => $e->getMessage()
+                ), true);
+            }
+
+            throw $e;
+        }
     }
     
     /**

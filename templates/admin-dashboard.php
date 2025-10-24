@@ -216,16 +216,29 @@ $authorized_users = IDokladProcessor_Database::get_all_authorized_users();
                     </thead>
                     <tbody>
                         <?php foreach ($recent_logs as $log): ?>
+                            <?php
+                                $action_type   = isset($log->action_type) ? (string) $log->action_type : '';
+                                $status        = isset($log->status) ? (string) $log->status : '';
+                                $email_from    = isset($log->email_from) ? (string) $log->email_from : '';
+                                $details       = isset($log->details) ? (string) $log->details : '';
+                                $status_slug   = $status !== '' ? sanitize_html_class(strtolower($status)) : 'unknown';
+                                $status_label  = $status !== '' ? ucfirst($status) : __('Unknown', 'idoklad-invoice-processor');
+                            ?>
                             <tr>
                                 <td><?php echo human_time_diff(strtotime($log->created_at), current_time('timestamp')) . ' ago'; ?></td>
-                                <td><?php echo esc_html($log->action_type); ?></td>
+                                <td><?php echo esc_html($action_type); ?></td>
                                 <td>
-                                    <span class="status-badge status-<?php echo $log->status; ?>">
-                                        <?php echo ucfirst($log->status); ?>
+                                    <span class="status-badge status-<?php echo esc_attr($status_slug); ?>">
+                                        <?php echo esc_html($status_label); ?>
                                     </span>
                                 </td>
-                                <td><?php echo esc_html($log->email_from); ?></td>
-                                <td><?php echo esc_html(substr($log->details, 0, 100)); ?></td>
+                                <td><?php echo esc_html($email_from); ?></td>
+                                <?php
+                                    $details_preview = function_exists('mb_substr')
+                                        ? mb_substr($details, 0, 100)
+                                        : substr($details, 0, 100);
+                                ?>
+                                <td><?php echo esc_html($details_preview); ?></td>
                             </tr>
                         <?php endforeach; ?>
                     </tbody>
