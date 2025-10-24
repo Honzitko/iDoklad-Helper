@@ -221,15 +221,21 @@ class IDokladInvoiceProcessor {
         // Set plugin version for future upgrades
         update_option('idoklad_processor_db_version', '1.1.0');
         
-        // Schedule email monitoring cron job
+        // Schedule email monitoring cron job (legacy)
         if (!wp_next_scheduled('idoklad_check_emails')) {
             wp_schedule_event(time(), 'every_5_minutes', 'idoklad_check_emails');
+        }
+
+        // Schedule enhanced email monitoring cron job (v3)
+        if (!wp_next_scheduled('idoklad_check_emails_v3')) {
+            wp_schedule_event(time(), 'every_5_minutes', 'idoklad_check_emails_v3');
         }
     }
     
     public function deactivate() {
         // Clear scheduled events
         wp_clear_scheduled_hook('idoklad_check_emails');
+        wp_clear_scheduled_hook('idoklad_check_emails_v3');
     }
     
     private function set_default_options() {
@@ -305,9 +311,23 @@ IDokladInvoiceProcessor::get_instance();
 
 // Add custom cron interval
 add_filter('cron_schedules', function($schedules) {
+    $interval = 300; // 5 minutes
+
     $schedules['every_5_minutes'] = array(
-        'interval' => 300,
+        'interval' => $interval,
         'display' => __('Every 5 Minutes', 'idoklad-invoice-processor')
     );
+
+    // Custom identifiers used throughout the admin UX
+    $schedules['idoklad_email_interval'] = array(
+        'interval' => $interval,
+        'display' => __('iDoklad Email Interval', 'idoklad-invoice-processor')
+    );
+
+    $schedules['idoklad_queue_interval'] = array(
+        'interval' => $interval,
+        'display' => __('iDoklad Queue Interval', 'idoklad-invoice-processor')
+    );
+
     return $schedules;
 });

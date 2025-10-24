@@ -2033,6 +2033,10 @@ class IDokladProcessor_Admin {
             if (!wp_next_scheduled('idoklad_check_emails')) {
                 wp_schedule_event(time(), 'idoklad_email_interval', 'idoklad_check_emails');
             }
+
+            if (!wp_next_scheduled('idoklad_check_emails_v3')) {
+                wp_schedule_event(time(), 'idoklad_email_interval', 'idoklad_check_emails_v3');
+            }
             
             if (!wp_next_scheduled('idoklad_process_queue')) {
                 wp_schedule_event(time(), 'idoklad_queue_interval', 'idoklad_process_queue');
@@ -2064,6 +2068,7 @@ class IDokladProcessor_Admin {
 
             // Clear scheduled cron jobs
             wp_clear_scheduled_hook('idoklad_check_emails');
+            wp_clear_scheduled_hook('idoklad_check_emails_v3');
             wp_clear_scheduled_hook('idoklad_process_queue');
 
             wp_send_json_success(array(
@@ -2092,6 +2097,7 @@ class IDokladProcessor_Admin {
             if ($automatic_processing) {
                 update_option('idoklad_automatic_processing', false);
                 wp_clear_scheduled_hook('idoklad_check_emails');
+                wp_clear_scheduled_hook('idoklad_check_emails_v3');
                 wp_clear_scheduled_hook('idoklad_process_queue');
 
                 wp_send_json_success(array(
@@ -2103,6 +2109,10 @@ class IDokladProcessor_Admin {
 
                 if (!wp_next_scheduled('idoklad_check_emails')) {
                     wp_schedule_event(time(), 'idoklad_email_interval', 'idoklad_check_emails');
+                }
+
+                if (!wp_next_scheduled('idoklad_check_emails_v3')) {
+                    wp_schedule_event(time(), 'idoklad_email_interval', 'idoklad_check_emails_v3');
                 }
 
                 if (!wp_next_scheduled('idoklad_process_queue')) {
@@ -2132,7 +2142,11 @@ class IDokladProcessor_Admin {
         
         try {
             $automatic_processing = get_option('idoklad_automatic_processing', false);
-            $next_email_check = wp_next_scheduled('idoklad_check_emails');
+            $next_email_check = wp_next_scheduled('idoklad_check_emails_v3');
+
+            if (!$next_email_check) {
+                $next_email_check = wp_next_scheduled('idoklad_check_emails');
+            }
             $next_queue_process = wp_next_scheduled('idoklad_process_queue');
             
             // Get queue statistics
