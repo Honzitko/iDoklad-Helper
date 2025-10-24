@@ -91,7 +91,7 @@ class IDokladProcessor_PDFCoProcessor {
      * Upload file to PDF.co using official documented method
      * Per docs: POST to /v1/file/upload with multipart/form-data
      */
-    private function upload_file($file_path) {
+    public function upload_file($file_path) {
         $url = 'https://api.pdf.co/v1/file/upload';
         
         $boundary = wp_generate_password(24, false);
