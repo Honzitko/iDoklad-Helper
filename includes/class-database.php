@@ -146,8 +146,15 @@ class IDokladProcessor_Database {
     public static function get_all_authorized_users() {
         global $wpdb;
         $table = $wpdb->prefix . 'idoklad_users';
-        
+
         return $wpdb->get_results("SELECT * FROM $table ORDER BY name ASC");
+    }
+
+    /**
+     * Backwards compatible wrapper used by legacy classes expecting get_all_users()
+     */
+    public function get_all_users() {
+        return self::get_all_authorized_users();
     }
     
     /**
