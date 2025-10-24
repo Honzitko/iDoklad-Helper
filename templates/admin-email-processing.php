@@ -9,7 +9,11 @@ if (!defined('ABSPATH')) {
 
 // Get current processing status
 $automatic_processing = get_option('idoklad_automatic_processing', false);
-$next_email_check = wp_next_scheduled('idoklad_check_emails');
+$next_email_check = wp_next_scheduled('idoklad_check_emails_v3');
+
+if (!$next_email_check) {
+    $next_email_check = wp_next_scheduled('idoklad_check_emails');
+}
 $next_queue_process = wp_next_scheduled('idoklad_process_queue');
 
 // Get queue statistics

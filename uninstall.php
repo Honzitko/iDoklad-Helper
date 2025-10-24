@@ -44,6 +44,7 @@ foreach ($tables_to_remove as $table) {
 
 // Clear scheduled events
 wp_clear_scheduled_hook('idoklad_check_emails');
+wp_clear_scheduled_hook('idoklad_check_emails_v3');
 
 // Remove log files
 $upload_dir = wp_upload_dir();
