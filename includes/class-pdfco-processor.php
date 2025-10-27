@@ -19,9 +19,8 @@ class IDokladProcessor_PDFCoProcessor {
     }
     
     /**
-     * Extract text from PDF using PDF.co (following official documentation)
-     * Step 1: Upload file via /v1/file/upload
-     * Step 2: Use returned URL in /v1/pdf/convert/to/text
+     * Extract text from PDF using PDF.co (direct base64 upload)
+     * Sends a single request to /v1/pdf/convert/to/text with inline=true
      */
     public function extract_text($pdf_path, $queue_id = null) {
         if (!file_exists($pdf_path)) {
@@ -41,35 +40,48 @@ class IDokladProcessor_PDFCoProcessor {
         }
         
         try {
-            // Step 1: Upload file and get URL (per official docs)
-            $file_url = $this->upload_file($pdf_path);
-            
-            if ($queue_id) {
-                IDokladProcessor_Database::add_queue_step($queue_id, 'PDF.co: File uploaded successfully', null, false);
+            $pdf_contents = file_get_contents($pdf_path);
+
+            if ($pdf_contents === false) {
+                throw new Exception('Unable to read PDF file: ' . $pdf_path);
             }
-            
-            // Step 2: Extract text using the URL
-            $text = $this->extract_text_from_url($file_url);
-            
+
+            $base64_pdf = base64_encode($pdf_contents);
+
+            if ($queue_id) {
+                IDokladProcessor_Database::add_queue_step($queue_id, 'PDF.co: Sending PDF for text extraction', array(
+                    'transport' => 'direct-base64'
+                ), false);
+            }
+
+            $text = $this->extract_text_from_base64($base64_pdf);
+            $used_ocr = false;
+
             // If text is too short, it might be a scanned PDF - use OCR
             if (strlen(trim($text)) < 100) {
                 if (get_option('idoklad_debug_mode')) {
                     error_log('iDoklad PDF.co: Text extraction returned minimal text, trying OCR');
                 }
-                
+
                 if ($queue_id) {
-                    IDokladProcessor_Database::add_queue_step($queue_id, 'PDF.co: Minimal text found, switching to OCR', array('text_length' => strlen($text)), false);
+                    IDokladProcessor_Database::add_queue_step($queue_id, 'PDF.co: Minimal text found, switching to OCR', array(
+                        'text_length' => strlen($text)
+                    ), false);
                 }
-                
-                $text = $this->ocr_pdf_from_url($file_url);
+
+                $used_ocr = true;
+                $text = $this->extract_text_from_base64($base64_pdf, true);
             }
-            
+
             if (empty($text)) {
                 throw new Exception('PDF.co returned no text from PDF');
             }
-            
+
             if ($queue_id) {
-                IDokladProcessor_Database::add_queue_step($queue_id, 'PDF.co: Text extraction successful', array('characters' => strlen($text)), false);
+                IDokladProcessor_Database::add_queue_step($queue_id, 'PDF.co: Text extraction successful', array(
+                    'characters' => strlen($text),
+                    'used_ocr' => $used_ocr
+                ), false);
             }
             
             if (get_option('idoklad_debug_mode')) {
@@ -141,48 +153,12 @@ class IDokladProcessor_PDFCoProcessor {
      * Set inline=true to get text in 'body' field instead of download URL
      */
     private function extract_text_from_url($pdf_url) {
-        $url = 'https://api.pdf.co/v1/pdf/convert/to/text';
-        
-        $response = wp_remote_post($url, array(
-            'headers' => array(
-                'x-api-key' => $this->api_key,
-                'Content-Type' => 'application/json'
-            ),
-            'body' => json_encode(array(
-                'url' => $pdf_url,
-                'inline' => true  // Return text in 'body' field per documentation
-            )),
-            'timeout' => 120
-        ));
-        
-        if (is_wp_error($response)) {
-            throw new Exception('PDF.co text extraction failed: ' . $response->get_error_message());
-        }
-        
-        $response_code = wp_remote_retrieve_response_code($response);
-        $response_body = wp_remote_retrieve_body($response);
-        $data = json_decode($response_body, true);
-        
-        if (get_option('idoklad_debug_mode')) {
-            error_log('iDoklad PDF.co: Text extraction response: ' . $response_body);
-        }
-        
-        if ($response_code !== 200) {
-            $error_msg = isset($data['message']) ? $data['message'] : $response_body;
-            throw new Exception('PDF.co text extraction failed: ' . $error_msg);
-        }
-        
-        // Per documentation: check 'error' field first, then get 'body' field
-        if (isset($data['error']) && $data['error'] !== false) {
-            $error_msg = isset($data['message']) ? $data['message'] : 'Unknown error';
-            throw new Exception('PDF.co returned error: ' . $error_msg);
-        }
-        
-        if (!isset($data['body'])) {
-            throw new Exception('PDF.co response missing body field');
-        }
-        
-        return $data['body'];
+        $payload = array(
+            'url' => $pdf_url,
+            'inline' => true
+        );
+
+        return $this->dispatch_text_extraction_request($payload, 120);
     }
     
     /**
@@ -190,49 +166,83 @@ class IDokladProcessor_PDFCoProcessor {
      * Per docs: Same endpoint with OCREnabled parameter and inline=true
      */
     private function ocr_pdf_from_url($pdf_url) {
-        $url = 'https://api.pdf.co/v1/pdf/convert/to/text';
-        
+        $payload = array(
+            'url' => $pdf_url,
+            'inline' => true,
+            'OCREnabled' => true,
+            'lang' => 'ces'
+        );
+
+        return $this->dispatch_text_extraction_request($payload, 180);
+    }
+
+    /**
+     * Extract text from a base64 encoded PDF.
+     */
+    private function extract_text_from_base64($base64_pdf, $use_ocr = false, $language = 'ces') {
+        $payload = array(
+            'file' => $base64_pdf,
+            'inline' => true,
+            'async' => false
+        );
+
+        if ($use_ocr) {
+            $payload['OCREnabled'] = true;
+
+            if (!empty($language)) {
+                $payload['lang'] = $language;
+            }
+        }
+
+        $timeout = $use_ocr ? 180 : 120;
+
+        return $this->dispatch_text_extraction_request($payload, $timeout);
+    }
+
+    /**
+     * Shared handler for PDF.co text extraction requests.
+     */
+    private function dispatch_text_extraction_request($payload, $timeout = 120) {
+        $url = $this->api_url . '/pdf/convert/to/text';
+
+        $body = function_exists('wp_json_encode') ? wp_json_encode($payload) : json_encode($payload);
+
         $response = wp_remote_post($url, array(
             'headers' => array(
                 'x-api-key' => $this->api_key,
-                'Content-Type' => 'application/json'
+                'Content-Type' => 'application/json',
+                'User-Agent' => 'WordPress-iDoklad-Processor/1.1.0'
             ),
-            'body' => json_encode(array(
-                'url' => $pdf_url,
-                'inline' => true,  // Return text in 'body' field per documentation
-                'OCREnabled' => true,
-                'lang' => 'ces'  // Czech language per documentation (use 'lang' not 'ocrLanguages')
-            )),
-            'timeout' => 180
+            'body' => $body,
+            'timeout' => $timeout
         ));
-        
+
         if (is_wp_error($response)) {
-            throw new Exception('PDF.co OCR failed: ' . $response->get_error_message());
+            throw new Exception('PDF.co text extraction failed: ' . $response->get_error_message());
         }
-        
+
         $response_code = wp_remote_retrieve_response_code($response);
         $response_body = wp_remote_retrieve_body($response);
         $data = json_decode($response_body, true);
-        
+
         if (get_option('idoklad_debug_mode')) {
-            error_log('iDoklad PDF.co: OCR response: ' . $response_body);
+            error_log('iDoklad PDF.co: Text extraction response: ' . $response_body);
         }
-        
+
         if ($response_code !== 200) {
             $error_msg = isset($data['message']) ? $data['message'] : $response_body;
-            throw new Exception('PDF.co OCR failed: ' . $error_msg);
+            throw new Exception('PDF.co text extraction failed: ' . $error_msg);
         }
-        
-        // Per documentation: check 'error' field first, then get 'body' field
+
         if (isset($data['error']) && $data['error'] !== false) {
             $error_msg = isset($data['message']) ? $data['message'] : 'Unknown error';
-            throw new Exception('PDF.co OCR returned error: ' . $error_msg);
+            throw new Exception('PDF.co returned error: ' . $error_msg);
         }
-        
+
         if (!isset($data['body'])) {
-            throw new Exception('PDF.co OCR response missing body field');
+            throw new Exception('PDF.co response missing body field');
         }
-        
+
         return $data['body'];
     }
     
@@ -368,31 +378,38 @@ class IDokladProcessor_PDFCoProcessor {
         }
         
         $start_time = microtime(true);
-        
-        // Upload
-        $upload_start = microtime(true);
-        $uploaded_url = $this->upload_file($pdf_path);
-        $upload_time = round((microtime(true) - $upload_start) * 1000, 2);
-        
-        // Extract text
+
+        // Read and encode PDF once
+        $read_start = microtime(true);
+        $pdf_contents = file_get_contents($pdf_path);
+
+        if ($pdf_contents === false) {
+            throw new Exception('Unable to read PDF file');
+        }
+
+        $base64_pdf = base64_encode($pdf_contents);
+        $read_time = round((microtime(true) - $read_start) * 1000, 2);
+
+        // Extract text via direct API call
         $extract_start = microtime(true);
-        $text = $this->extract_text_from_url($uploaded_url);
+        $text = $this->extract_text_from_base64($base64_pdf);
         $extract_time = round((microtime(true) - $extract_start) * 1000, 2);
-        
-        // Get metadata
+
+        // Get metadata (requires separate upload via API)
         $metadata_start = microtime(true);
         $metadata = $this->get_metadata($pdf_path);
         $metadata_time = round((microtime(true) - $metadata_start) * 1000, 2);
-        
+
         $total_time = round((microtime(true) - $start_time) * 1000, 2);
-        
+
         return array(
             'text' => $text,
             'text_length' => strlen($text),
             'metadata' => $metadata,
-            'uploaded_url' => $uploaded_url,
+            'uploaded_url' => null,
+            'transport' => 'direct-base64',
             'timings' => array(
-                'upload_ms' => $upload_time,
+                'read_ms' => $read_time,
                 'extract_ms' => $extract_time,
                 'metadata_ms' => $metadata_time,
                 'total_ms' => $total_time
