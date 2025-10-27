@@ -65,10 +65,16 @@ class IDokladProcessor_InvoiceAIRest {
         }
         $send_to_idoklad = rest_sanitize_boolean($send_to_idoklad);
 
+        $prompt_id = trim((string) get_option('idoklad_openai_prompt_id', ''));
+        $prompt_version = trim((string) get_option('idoklad_openai_prompt_version', ''));
+        $use_hosted_prompt = !empty($prompt_id);
+
         $this->log('Invoice AI REST: Received parse request', [
-            'has_invoice_url'  => !empty($request->get_param('invoice_url')),
-            'has_invoice_text' => !empty($request->get_param('invoice_text')),
-            'send_to_idoklad'  => $send_to_idoklad,
+            'has_invoice_url'   => !empty($request->get_param('invoice_url')),
+            'has_invoice_text'  => !empty($request->get_param('invoice_text')),
+            'send_to_idoklad'   => $send_to_idoklad,
+            'openai_prompt_id'  => $use_hosted_prompt ? $prompt_id : null,
+            'prompt_version'    => $use_hosted_prompt ? $prompt_version : null,
         ]);
 
         $invoice_url  = $request->get_param('invoice_url');
@@ -112,12 +118,24 @@ class IDokladProcessor_InvoiceAIRest {
             }
         }
 
-        $system_prompt = 'You are an invoice parser. Output clean JSON with vendor_name, invoice_number, total_amount, tax_amount, due_date, currency.';
-        $user_instruction = !empty($invoice_text)
-            ? "Extract fields from this invoice text:\n\n" . $invoice_text
-            : 'Extract fields from the attached invoice document. If the document is unreadable, respond with an error description.';
+        if ($use_hosted_prompt) {
+            $system_prompt = '';
+            $user_instruction = !empty($invoice_text)
+                ? "Invoice text:\n\n" . $invoice_text
+                : 'Invoice document attached for parsing.';
+        } else {
+            $system_prompt = 'You are an invoice parser. Output clean JSON with vendor_name, invoice_number, total_amount, tax_amount, due_date, currency.';
+            $user_instruction = !empty($invoice_text)
+                ? "Extract fields from this invoice text:\n\n" . $invoice_text
+                : 'Extract fields from the attached invoice document. If the document is unreadable, respond with an error description.';
+        }
 
-        $response = $this->call_openai_responses($api_key, $system_prompt, $user_instruction, $file_id);
+        $response = $this->call_openai_responses($api_key, [
+            'system_prompt'    => $system_prompt,
+            'user_instruction' => $user_instruction,
+            'prompt_id'        => $prompt_id,
+            'prompt_version'   => $prompt_version,
+        ], $file_id);
 
         if (is_wp_error($response)) {
             return new WP_REST_Response([
@@ -134,7 +152,7 @@ class IDokladProcessor_InvoiceAIRest {
             ], 500);
         }
 
-        $structured_data['source'] = 'chatgpt_rest';
+        $structured_data['source'] = $use_hosted_prompt ? 'openai_prompt' : 'chatgpt_rest';
 
         $this->log('Invoice AI REST: Parsed OpenAI response', [
             'keys' => array_keys($structured_data),
@@ -216,6 +234,8 @@ class IDokladProcessor_InvoiceAIRest {
             'validation' => $idoklad_validation,
             'idoklad_response' => $idoklad_response,
             'created_in_idoklad' => $send_to_idoklad && !empty($idoklad_response),
+            'openai_prompt_id' => $use_hosted_prompt ? $prompt_id : null,
+            'openai_prompt_version' => $use_hosted_prompt ? $prompt_version : null,
         ], 200);
     }
 
@@ -299,53 +319,109 @@ class IDokladProcessor_InvoiceAIRest {
         return $data['id'];
     }
 
-    private function call_openai_responses($api_key, $system_prompt, $user_instruction, $file_id = null) {
-        $input_messages = [
-            [
-                'role'    => 'system',
-                'content' => [
-                    [
-                        'type' => 'text',
-                        'text' => $system_prompt,
-                    ],
-                ],
-            ],
-        ];
+    private function call_openai_responses($api_key, $prompt_config, $file_id = null) {
+        $prompt_id = isset($prompt_config['prompt_id']) ? trim((string) $prompt_config['prompt_id']) : '';
+        $prompt_version = isset($prompt_config['prompt_version']) ? trim((string) $prompt_config['prompt_version']) : '';
+        $system_prompt = isset($prompt_config['system_prompt']) ? (string) $prompt_config['system_prompt'] : '';
+        $user_instruction = isset($prompt_config['user_instruction']) ? (string) $prompt_config['user_instruction'] : '';
+        $use_hosted_prompt = !empty($prompt_id);
 
-        $user_message = [
-            'role'    => 'user',
-            'content' => [
-                [
+        if ($use_hosted_prompt) {
+            $user_message = [
+                'role'    => 'user',
+                'content' => [],
+            ];
+
+            if ($user_instruction !== '') {
+                $user_message['content'][] = [
                     'type' => 'text',
                     'text' => $user_instruction,
-                ],
-            ],
-        ];
+                ];
+            }
 
-        if (!empty($file_id)) {
-            $user_message['attachments'] = [
-                [
+            if (!empty($file_id)) {
+                $user_message['attachments'] = [
+                    [
+                        'file_id' => $file_id,
+                    ],
+                ];
+
+                $user_message['content'][] = [
+                    'type'    => 'input_file',
                     'file_id' => $file_id,
+                ];
+            }
+
+            $payload = [
+                'model'             => $this->model,
+                'prompt'            => [
+                    'id' => $prompt_id,
+                ],
+                'input'             => [
+                    $user_message,
+                ],
+                'temperature'       => 0,
+                'max_output_tokens' => 1024,
+                'metadata'          => [
+                    'source' => 'idoklad-invoice-processor',
                 ],
             ];
 
-            $user_message['content'][] = [
-                'type'    => 'input_file',
-                'file_id' => $file_id,
+            if ($prompt_version !== '') {
+                $payload['prompt']['version'] = $prompt_version;
+            }
+        } else {
+            $input_messages = [];
+
+            if ($system_prompt !== '') {
+                $input_messages[] = [
+                    'role'    => 'system',
+                    'content' => [
+                        [
+                            'type' => 'text',
+                            'text' => $system_prompt,
+                        ],
+                    ],
+                ];
+            }
+
+            $user_message = [
+                'role'    => 'user',
+                'content' => [],
+            ];
+
+            if ($user_instruction !== '') {
+                $user_message['content'][] = [
+                    'type' => 'text',
+                    'text' => $user_instruction,
+                ];
+            }
+
+            if (!empty($file_id)) {
+                $user_message['attachments'] = [
+                    [
+                        'file_id' => $file_id,
+                    ],
+                ];
+
+                $user_message['content'][] = [
+                    'type'    => 'input_file',
+                    'file_id' => $file_id,
+                ];
+            }
+
+            $input_messages[] = $user_message;
+
+            $payload = [
+                'model'             => $this->model,
+                'input'             => $input_messages,
+                'temperature'       => 0,
+                'max_output_tokens' => 1024,
+                'metadata'          => [
+                    'source' => 'idoklad-invoice-processor',
+                ],
             ];
         }
-
-        $input_messages[] = $user_message;
-
-        $payload = [
-            'model'              => $this->model,
-            'input'              => $input_messages,
-            'temperature'        => 0,
-            'max_output_tokens'  => 1024,
-            'metadata'           => [
-                'source' => 'idoklad-invoice-processor',
-            ],
-        ];
 
         $response = wp_remote_post('https://api.openai.com/v1/responses', [
             'headers' => [
