@@ -771,12 +771,13 @@ class IDokladProcessor_EmailMonitor {
             ));
         }
         
+        // Apply runtime defaults for required fields that can be auto-filled
+        $idoklad_data = $this->apply_runtime_defaults($idoklad_data, $email, $authorized_user);
+
         // Validate iDoklad payload
         if (isset($parser)) {
             // Use parser validation for text-parsed data
-            if ($idoklad_validation === null) {
-                $idoklad_validation = $parser->validate_idoklad_payload($idoklad_data);
-            }
+            $idoklad_validation = $parser->validate_idoklad_payload($idoklad_data);
             if (!$idoklad_validation['is_valid']) {
                 IDokladProcessor_Database::add_queue_step($email->id, 'ERROR: iDoklad payload validation failed', array(
                     'errors' => $idoklad_validation['errors']
@@ -1012,22 +1013,22 @@ class IDokladProcessor_EmailMonitor {
     private function validate_ai_parsed_data($data, $email_id) {
         $errors = array();
         $warnings = array();
-        
+
         // Check required iDoklad fields
         if (empty($data['DocumentNumber'])) {
-            $errors[] = 'Missing DocumentNumber';
+            $warnings[] = 'Missing DocumentNumber - per-user success counter will assign the next sequence automatically.';
         }
-        
+
         if (empty($data['Description'])) {
             $errors[] = 'Missing Description';
         }
-        
+
         if (empty($data['DateOfReceiving'])) {
-            $errors[] = 'Missing DateOfReceiving';
+            $warnings[] = 'Missing DateOfReceiving - email received timestamp will be used.';
         }
-        
+
         if (empty($data['Items']) || !is_array($data['Items']) || count($data['Items']) === 0) {
-            $errors[] = 'Missing or empty Items array';
+            $warnings[] = 'Missing or empty Items array - default service item will be injected.';
         }
         
         // Check currency
@@ -1069,5 +1070,190 @@ class IDokladProcessor_EmailMonitor {
                 array('Content-Type: text/html; charset=UTF-8')
             );
         }
+    }
+
+    /**
+     * Apply runtime defaults for iDoklad payload before API submission
+     */
+    private function apply_runtime_defaults($idoklad_data, $email, $authorized_user) {
+        if (!is_array($idoklad_data)) {
+            return $idoklad_data;
+        }
+
+        $applied = array();
+
+        $received_timestamp = !empty($email->created_at) ? strtotime($email->created_at) : false;
+        if (!$received_timestamp) {
+            $received_timestamp = current_time('timestamp');
+        }
+
+        $received_date = date('Y-m-d', $received_timestamp);
+
+        if (empty($idoklad_data['DateOfReceiving'])) {
+            $idoklad_data['DateOfReceiving'] = $received_date;
+            $applied['DateOfReceiving'] = $received_date;
+        }
+
+        if (empty($idoklad_data['DateOfIssue'])) {
+            $idoklad_data['DateOfIssue'] = $idoklad_data['DateOfReceiving'];
+            $applied['DateOfIssue'] = $idoklad_data['DateOfIssue'];
+        }
+
+        if (empty($idoklad_data['DocumentNumber'])) {
+            $successful_count = IDokladProcessor_Database::get_successful_invoice_count_for_user($email->email_from);
+            $sequence_number = $successful_count + 1;
+            $document_number = $this->build_document_number_for_user($authorized_user, $email->email_from, $sequence_number);
+
+            $idoklad_data['DocumentNumber'] = $document_number;
+            $applied['DocumentNumber'] = array(
+                'value' => $document_number,
+                'sequence' => $sequence_number,
+                'source' => 'per_user_success_counter'
+            );
+        }
+
+        if (!isset($idoklad_data['partner_data']) || !is_array($idoklad_data['partner_data'])) {
+            $idoklad_data['partner_data'] = array(
+                'company' => $idoklad_data['PartnerName'] ?? '',
+                'email' => $idoklad_data['PartnerEmail'] ?? '',
+                'address' => $idoklad_data['PartnerAddress'] ?? '',
+                'city' => $idoklad_data['PartnerCity'] ?? '',
+                'postal_code' => $idoklad_data['PartnerPostalCode'] ?? '',
+                'id' => isset($idoklad_data['PartnerId']) ? $idoklad_data['PartnerId'] : null,
+            );
+        }
+
+        if (!empty($idoklad_data['partner_data']['id']) && empty($idoklad_data['PartnerId'])) {
+            $idoklad_data['PartnerId'] = $idoklad_data['partner_data']['id'];
+        }
+
+        if (empty($idoklad_data['PartnerName']) && !empty($idoklad_data['partner_data']['company'])) {
+            $idoklad_data['PartnerName'] = $idoklad_data['partner_data']['company'];
+        }
+
+        $items_valid = false;
+        $normalized_items = array();
+
+        if (!empty($idoklad_data['Items']) && is_array($idoklad_data['Items'])) {
+            foreach ($idoklad_data['Items'] as $index => $item) {
+                if (!is_array($item)) {
+                    continue;
+                }
+
+                $name = isset($item['Name']) && trim((string) $item['Name']) !== ''
+                    ? $item['Name']
+                    : 'Item #' . ($index + 1);
+
+                if ($name === 'Item #' . ($index + 1)) {
+                    $applied['Items'][] = array(
+                        'index' => $index,
+                        'action' => 'default_name'
+                    );
+                }
+
+                $amount = isset($item['Amount']) && floatval($item['Amount']) > 0
+                    ? (float) $item['Amount']
+                    : 1.0;
+
+                if (!isset($item['Amount']) || floatval($item['Amount']) <= 0) {
+                    $applied['Items'][] = array(
+                        'index' => $index,
+                        'action' => 'default_amount'
+                    );
+                }
+
+                $unit_price = isset($item['UnitPrice']) && is_numeric($item['UnitPrice'])
+                    ? (float) $item['UnitPrice']
+                    : 0.0;
+
+                if (!isset($item['UnitPrice']) || !is_numeric($item['UnitPrice'])) {
+                    $applied['Items'][] = array(
+                        'index' => $index,
+                        'action' => 'default_unit_price'
+                    );
+                }
+
+                $normalized_items[] = array(
+                    'Name' => $name,
+                    'Unit' => isset($item['Unit']) && trim((string) $item['Unit']) !== '' ? $item['Unit'] : 'pcs',
+                    'Amount' => $amount,
+                    'UnitPrice' => $unit_price,
+                    'PriceType' => isset($item['PriceType']) ? (int) $item['PriceType'] : 1,
+                    'VatRateType' => isset($item['VatRateType']) ? (int) $item['VatRateType'] : 2,
+                    'VatRate' => isset($item['VatRate']) ? (float) $item['VatRate'] : 0.0,
+                    'IsTaxMovement' => isset($item['IsTaxMovement']) ? (bool) $item['IsTaxMovement'] : false,
+                    'DiscountPercentage' => isset($item['DiscountPercentage']) ? (float) $item['DiscountPercentage'] : 0.0
+                );
+
+                if (!empty($name)) {
+                    $items_valid = true;
+                }
+            }
+        }
+
+        if ($items_valid) {
+            $idoklad_data['Items'] = $normalized_items;
+        }
+
+        if (!$items_valid) {
+            $idoklad_data['Items'] = array($this->build_default_invoice_item($idoklad_data));
+            $applied['Items'][] = array('action' => 'default_item_injected');
+        }
+
+        if (!empty($applied)) {
+            IDokladProcessor_Database::add_queue_step($email->id, 'Auto-filled invoice defaults', array(
+                'applied' => $applied
+            ), false);
+        }
+
+        return $idoklad_data;
+    }
+
+    /**
+     * Build document number from per-user success counter
+     */
+    private function build_document_number_for_user($authorized_user, $email_address, $sequence_number) {
+        $prefix = '';
+
+        if ($authorized_user && !empty($authorized_user->name)) {
+            $prefix = strtoupper(preg_replace('/[^A-Z0-9]/', '', substr($authorized_user->name, 0, 3)));
+        }
+
+        if ($prefix === '' && !empty($email_address)) {
+            $prefix = strtoupper(preg_replace('/[^A-Z0-9]/', '', substr($email_address, 0, 3)));
+        }
+
+        if ($prefix === '') {
+            $prefix = 'INV';
+        }
+
+        return $prefix . '-' . str_pad($sequence_number, 4, '0', STR_PAD_LEFT);
+    }
+
+    /**
+     * Build default invoice item when none are provided
+     */
+    private function build_default_invoice_item($idoklad_data) {
+        $default_price = 0.0;
+        $possible_total_fields = array('TotalWithVat', 'Total', 'TotalAmount', 'TotalVatIncluded');
+
+        foreach ($possible_total_fields as $field) {
+            if (isset($idoklad_data[$field]) && is_numeric($idoklad_data[$field])) {
+                $default_price = (float) $idoklad_data[$field];
+                break;
+            }
+        }
+
+        return array(
+            'Name' => 'Automatic service item',
+            'Unit' => 'pcs',
+            'Amount' => 1.0,
+            'UnitPrice' => $default_price,
+            'PriceType' => 1,
+            'VatRateType' => 2,
+            'VatRate' => 0.0,
+            'IsTaxMovement' => false,
+            'DiscountPercentage' => 0.0
+        );
     }
 }

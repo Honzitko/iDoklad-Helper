@@ -267,13 +267,32 @@ class IDokladProcessor_Database {
     public static function get_pending_queue($limit = 10) {
         global $wpdb;
         $table = $wpdb->prefix . 'idoklad_queue';
-        
+
         return $wpdb->get_results($wpdb->prepare(
             "SELECT * FROM $table WHERE status = 'pending' AND attempts < max_attempts ORDER BY created_at ASC LIMIT %d",
             $limit
         ));
     }
-    
+
+    /**
+     * Count successfully processed invoices for a specific sender
+     */
+    public static function get_successful_invoice_count_for_user($email_address) {
+        if (empty($email_address)) {
+            return 0;
+        }
+
+        global $wpdb;
+        $table = $wpdb->prefix . 'idoklad_logs';
+
+        $count = $wpdb->get_var($wpdb->prepare(
+            "SELECT COUNT(*) FROM $table WHERE email_from = %s AND processing_status = 'success'",
+            $email_address
+        ));
+
+        return $count ? (int) $count : 0;
+    }
+
     /**
      * Update queue item status
      */
