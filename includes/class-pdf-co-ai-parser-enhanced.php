@@ -21,7 +21,23 @@ class IDokladProcessor_PDFCoAIParserEnhanced {
         $this->debug_mode = get_option('idoklad_debug_mode', false);
         $this->logger = IDokladProcessor_Logger::get_instance();
     }
-    
+
+    /**
+     * Transform already-structured data to iDoklad format without calling PDF.co
+     */
+    public function transform_structured_data($extracted_data, $context = 'structured_input') {
+        $this->log_step('Transforming structured data input', array('context' => $context));
+
+        $idoklad_data = $this->transform_to_idoklad_format($extracted_data);
+        $validation = $this->validate_idoklad_payload($idoklad_data);
+
+        return array(
+            'success' => $validation['is_valid'],
+            'data' => $idoklad_data,
+            'validation' => $validation
+        );
+    }
+
     /**
      * Parse invoice with comprehensive debugging and step-by-step examination
      */

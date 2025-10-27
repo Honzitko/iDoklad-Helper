@@ -39,10 +39,10 @@ jQuery(document).ready(function($) {
     $('#test-chatgpt-connection').on('click', function() {
         var button = $(this);
         var resultSpan = $('#chatgpt-test-result');
-        
+
         button.prop('disabled', true);
         resultSpan.html('<span class="idoklad-loading"></span> Testing...');
-        
+
         $.ajax({
             url: idoklad_ajax.ajax_url,
             type: 'POST',
@@ -62,6 +62,59 @@ jQuery(document).ready(function($) {
             },
             complete: function() {
                 button.prop('disabled', false);
+            }
+        });
+    });
+
+    // Refresh ChatGPT model list
+    $('#refresh-chatgpt-models').on('click', function() {
+        var button = $(this);
+        var select = $('#chatgpt_model');
+        var resultSpan = $('#chatgpt-test-result');
+
+        if (!select.length) {
+            return;
+        }
+
+        var originalText = button.data('original-text');
+        if (!originalText) {
+            originalText = button.text();
+            button.data('original-text', originalText);
+        }
+
+        button.prop('disabled', true).text('Refreshing...');
+        resultSpan.html('<span class="idoklad-loading"></span> Refreshing models...');
+
+        $.ajax({
+            url: idoklad_ajax.ajax_url,
+            type: 'POST',
+            data: {
+                action: 'idoklad_get_chatgpt_models',
+                nonce: idoklad_ajax.nonce
+            },
+            success: function(response) {
+                if (response.success && typeof response.data === 'object') {
+                    var previousValue = select.val();
+                    select.empty();
+                    $.each(response.data, function(value, label) {
+                        select.append($('<option>', { value: value, text: label }));
+                    });
+
+                    if (previousValue && response.data.hasOwnProperty(previousValue)) {
+                        select.val(previousValue);
+                    }
+
+                    resultSpan.html('<span class="success">✓ Model list updated</span>');
+                } else {
+                    var errorMessage = response.data ? response.data : 'Could not refresh models';
+                    resultSpan.html('<span class="error">✗ ' + errorMessage + '</span>');
+                }
+            },
+            error: function() {
+                resultSpan.html('<span class="error">✗ Failed to refresh models</span>');
+            },
+            complete: function() {
+                button.prop('disabled', false).text(button.data('original-text'));
             }
         });
     });
@@ -393,6 +446,7 @@ jQuery(document).ready(function($) {
     
     var lastPdfText = '';
     var lastZapierResponse = '';
+    var lastChatGptResult = null;
     
     // Test PDF Parsing
     $('#test-pdf-parsing-form').on('submit', function(e) {
@@ -633,6 +687,119 @@ jQuery(document).ready(function($) {
         html += '</div>';
         
         $('#ocr-content').html(html);
+    }
+
+    // Test ChatGPT extraction
+    $('#test-chatgpt-form').on('submit', function(e) {
+        e.preventDefault();
+
+        var form = this;
+        var formData = new FormData(form);
+        formData.append('action', 'idoklad_test_chatgpt_invoice');
+        formData.append('nonce', idoklad_ajax.nonce);
+
+        var submitBtn = $(form).find('button[type="submit"]');
+        submitBtn.prop('disabled', true).text('Running ChatGPT...');
+
+        $('#chatgpt-result').hide();
+
+        $.ajax({
+            url: idoklad_ajax.ajax_url,
+            type: 'POST',
+            data: formData,
+            processData: false,
+            contentType: false,
+            success: function(response) {
+                if (response.success) {
+                    lastChatGptResult = response.data;
+                    displayChatGptResults(response.data);
+                    $('#chatgpt-result').show();
+                } else {
+                    alert('Error: ' + response.data);
+                }
+            },
+            error: function() {
+                alert('Error: ChatGPT extraction failed');
+            },
+            complete: function() {
+                submitBtn.prop('disabled', false).text('Run ChatGPT Extraction');
+            }
+        });
+    });
+
+    $('#chatgpt-use-last-text').on('click', function(e) {
+        e.preventDefault();
+
+        if (lastPdfText) {
+            $('#chatgpt-text-input').val(lastPdfText);
+        } else {
+            alert('Parse a PDF first to populate the extracted text.');
+        }
+    });
+
+    function displayChatGptResults(data) {
+        var html = '';
+
+        html += '<div class="result-box result-success">';
+        html += '<h4>✓ ChatGPT Extraction Successful</h4>';
+        html += '<div class="stat-item"><span>Model:</span><strong>' + escapeHtml((data.model || 'n/a')) + '</strong></div>';
+        html += '<div class="stat-item"><span>Text Length:</span><strong>' + (data.text_length || 0).toLocaleString() + ' chars</strong></div>';
+        html += '</div>';
+
+        if (data.text_preview) {
+            html += '<div class="result-box result-info">';
+            html += '<h4>Text Preview</h4>';
+            html += '<div class="code-block">' + escapeHtml(data.text_preview) + '</div>';
+            html += '</div>';
+        }
+
+        if (data.extracted_data) {
+            html += '<div class="result-box result-info">';
+            html += '<h4>Extracted Fields</h4>';
+            html += '<div class="code-block">' + escapeHtml(JSON.stringify(data.extracted_data, null, 2)) + '</div>';
+            html += '</div>';
+        }
+
+        if (data.idoklad_data) {
+            html += '<div class="result-box result-info">';
+            html += '<h4>iDoklad Payload Preview</h4>';
+            html += '<div class="code-block">' + escapeHtml(JSON.stringify(data.idoklad_data, null, 2)) + '</div>';
+            html += '</div>';
+        }
+
+        if (data.validation) {
+            html += '<div class="result-box result-info">';
+            html += '<h4>Validation Summary</h4>';
+            html += '<div class="stat-item"><span>Status:</span><strong>' + (data.validation.is_valid ? '✅ Valid' : '⚠️ Issues found') + '</strong></div>';
+
+            if (data.validation.errors && data.validation.errors.length) {
+                html += '<div class="stat-item"><span>Errors:</span><ul>';
+                data.validation.errors.forEach(function(error) {
+                    html += '<li>' + escapeHtml(error) + '</li>';
+                });
+                html += '</ul></div>';
+            }
+
+            if (data.validation.warnings && data.validation.warnings.length) {
+                html += '<div class="stat-item"><span>Warnings:</span><ul>';
+                data.validation.warnings.forEach(function(warning) {
+                    html += '<li>' + escapeHtml(warning) + '</li>';
+                });
+                html += '</ul></div>';
+            }
+
+            if (data.validation.required_fields_present && data.validation.required_fields_present.length) {
+                html += '<div class="stat-item"><span>Present Fields:</span>' + escapeHtml(data.validation.required_fields_present.join(', ')) + '</div>';
+            }
+
+            if (data.validation.required_fields_missing && data.validation.required_fields_missing.length) {
+                html += '<div class="stat-item"><span>Missing Fields:</span>' + escapeHtml(data.validation.required_fields_missing.join(', ')) + '</div>';
+            }
+
+            html += '</div>';
+        }
+
+        $('#chatgpt-content').html(html);
     }
     
     // Test Zapier

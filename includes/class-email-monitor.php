@@ -474,41 +474,44 @@ class IDokladProcessor_EmailMonitor {
         $idoklad_api = $this->initialize_idoklad_api_client($authorized_user, $email->id);
         $notification = new IDokladProcessor_Notification();
         
-        // Step 4: Process PDF with AI Parser (preferred) or fallback to text extraction
-        IDokladProcessor_Database::add_queue_step($email->id, 'Processing PDF with AI Parser', array(
-            'filename' => basename($email->attachment_path)
+        // Step 4: Process PDF using selected engine
+        $processing_engine = get_option('idoklad_processing_engine', 'pdfco');
+        $use_chatgpt_engine = ($processing_engine === 'chatgpt');
+
+        IDokladProcessor_Database::add_queue_step($email->id, 'Processing engine selected', array(
+            'engine' => $processing_engine
         ));
-        
+
         $extracted_data = array();
         $pdf_text = '';
-        
-        // Try AI Parser first if API key is configured
+
         $pdf_co_api_key = get_option('idoklad_pdfco_api_key');
         $use_ai_parser = get_option('idoklad_use_ai_parser');
-        if (!empty($pdf_co_api_key) && $use_ai_parser) {
+        $chatgpt_api_key = get_option('idoklad_chatgpt_api_key');
+
+        if (!$use_chatgpt_engine && !empty($pdf_co_api_key) && $use_ai_parser) {
             try {
                 require_once IDOKLAD_PROCESSOR_PLUGIN_DIR . 'includes/class-pdf-co-ai-parser.php';
                 $ai_parser = new IDokladProcessor_PDFCoAIParser();
-                
-                // Upload PDF to get URL for AI Parser
+
+                IDokladProcessor_Database::add_queue_step($email->id, 'Processing PDF with PDF.co AI Parser', array(
+                    'filename' => basename($email->attachment_path)
+                ));
+
                 $pdf_url = $pdf_processor->upload_to_pdf_co($email->attachment_path, $email->id);
-                
+
                 if (!empty($pdf_url)) {
                     IDokladProcessor_Database::add_queue_step($email->id, 'PDF uploaded to PDF.co, starting AI parsing');
-                    
+
                     $ai_parsed_data = $ai_parser->parse_invoice($pdf_url);
-                    
-                    // AI parser returns data in iDoklad format, so we can use it directly
                     $extracted_data = $ai_parsed_data;
-                    
-                    // Add email metadata for reference
                     $extracted_data['email_metadata'] = array(
                         'email_from' => $email->email_from,
                         'email_subject' => $email->email_subject,
                         'attachment_name' => basename($email->attachment_path),
                         'extracted_at' => current_time('mysql')
                     );
-                    
+
                     IDokladProcessor_Database::add_queue_step($email->id, 'AI parsing completed successfully', array(
                         'fields_extracted' => count($ai_parsed_data),
                         'has_invoice_number' => !empty($ai_parsed_data['invoice_number']),
@@ -519,43 +522,82 @@ class IDokladProcessor_EmailMonitor {
                 } else {
                     throw new Exception('Failed to upload PDF to PDF.co');
                 }
-                
+
             } catch (Exception $e) {
                 IDokladProcessor_Database::add_queue_step($email->id, 'AI parsing failed, falling back to text extraction', array(
                     'error' => $e->getMessage()
                 ));
-                
-                // Fall back to text extraction
-                $pdf_text = $pdf_processor->extract_text($email->attachment_path, $email->id);
-                if (empty($pdf_text)) {
-                    IDokladProcessor_Database::add_queue_step($email->id, 'ERROR: Could not extract text from PDF');
-                    throw new Exception('Could not extract text from PDF');
-                }
-                
-                IDokladProcessor_Database::add_queue_step($email->id, 'Text extracted successfully (fallback)', array(
-                    'text_length' => strlen($pdf_text) . ' characters',
-                    'preview' => substr($pdf_text, 0, 100) . '...'
-                ));
             }
-        } else {
-            // No AI Parser API key, use text extraction
-            $pdf_text = $pdf_processor->extract_text($email->attachment_path, $email->id);
-            
+        }
+
+        if ($use_chatgpt_engine) {
+            if (empty($chatgpt_api_key)) {
+                throw new Exception('ChatGPT processing selected but API key is not configured');
+            }
+
+            if (empty($pdf_text)) {
+                $pdf_text = $pdf_processor->extract_text($email->attachment_path, $email->id);
+            }
+
+            if (empty($pdf_text)) {
+                IDokladProcessor_Database::add_queue_step($email->id, 'ERROR: Could not extract text from PDF for ChatGPT processing');
+                throw new Exception('Could not extract text from PDF');
+            }
+
+            IDokladProcessor_Database::add_queue_step($email->id, 'Text extracted successfully for ChatGPT', array(
+                'text_length' => strlen($pdf_text) . ' characters',
+                'preview' => substr($pdf_text, 0, 100) . '...'
+            ));
+
+            try {
+                IDokladProcessor_Database::add_queue_step($email->id, 'Submitting extracted text to ChatGPT', array(
+                    'model' => get_option('idoklad_chatgpt_model', 'gpt-4o')
+                ));
+
+                $chatgpt = new IDokladProcessor_ChatGPTIntegration();
+                $chatgpt_data = $chatgpt->extract_invoice_data($pdf_text);
+
+                $chatgpt_data['source'] = 'chatgpt';
+                $chatgpt_data['pdf_text'] = $pdf_text;
+                $chatgpt_data['email_from'] = $email->email_from;
+                $chatgpt_data['email_subject'] = $email->email_subject;
+                $chatgpt_data['attachment_name'] = basename($email->attachment_path);
+                $chatgpt_data['extracted_at'] = current_time('mysql');
+
+                $extracted_data = $chatgpt_data;
+
+                IDokladProcessor_Database::add_queue_step($email->id, 'ChatGPT extraction completed', array(
+                    'has_invoice_number' => !empty($chatgpt_data['invoice_number']),
+                    'has_total_amount' => !empty($chatgpt_data['total_amount']),
+                    'items_count' => count($chatgpt_data['items'] ?? array())
+                ));
+            } catch (Exception $e) {
+                IDokladProcessor_Database::add_queue_step($email->id, 'ERROR: ChatGPT extraction failed', array(
+                    'error' => $e->getMessage()
+                ), true);
+                throw $e;
+            }
+
+        } elseif (empty($extracted_data)) {
+            if (empty($pdf_text)) {
+                $pdf_text = $pdf_processor->extract_text($email->attachment_path, $email->id);
+            }
+
             if (empty($pdf_text)) {
                 IDokladProcessor_Database::add_queue_step($email->id, 'ERROR: Could not extract text from PDF');
                 throw new Exception('Could not extract text from PDF');
             }
-            
+
             IDokladProcessor_Database::add_queue_step($email->id, 'Text extracted successfully', array(
                 'text_length' => strlen($pdf_text) . ' characters',
                 'preview' => substr($pdf_text, 0, 100) . '...'
             ));
         }
-        
+
         // Step 5: Prepare invoice data (if not already done by AI Parser)
         if (empty($extracted_data)) {
             IDokladProcessor_Database::add_queue_step($email->id, 'Preparing invoice data from extracted text');
-            
+
             // Create basic data structure from PDF text
             // The data transformer will handle the conversion to iDoklad format
             $extracted_data = array(
@@ -598,6 +640,8 @@ class IDokladProcessor_EmailMonitor {
             'has_amount_or_items' => !empty($extracted_data['total_amount']) || !empty($extracted_data['items'])
         ));
         
+        $idoklad_validation = null;
+
         // Step 7: Prepare data for iDoklad API format
         IDokladProcessor_Database::add_queue_step($email->id, 'Preparing data for iDoklad API format');
         
@@ -605,8 +649,30 @@ class IDokladProcessor_EmailMonitor {
         if (isset($extracted_data['ai_parsed']) && $extracted_data['ai_parsed'] === true) {
             // AI parser already returned iDoklad-formatted data
             $idoklad_data = $extracted_data;
-            
+
             IDokladProcessor_Database::add_queue_step($email->id, 'Using AI-parsed iDoklad data directly', array(
+                'document_number' => $idoklad_data['DocumentNumber'] ?? 'N/A',
+                'items_count' => count($idoklad_data['Items'] ?? array()),
+                'currency_id' => $idoklad_data['CurrencyId'] ?? 'N/A',
+                'has_description' => !empty($idoklad_data['Description']),
+                'has_date_of_receiving' => !empty($idoklad_data['DateOfReceiving'])
+            ));
+        } elseif (!empty($extracted_data['source']) && $extracted_data['source'] === 'chatgpt') {
+            require_once IDOKLAD_PROCESSOR_PLUGIN_DIR . 'includes/class-pdf-co-ai-parser-enhanced.php';
+            $parser = new IDokladProcessor_PDFCoAIParserEnhanced();
+
+            $transform_result = $parser->transform_structured_data($extracted_data, 'chatgpt_pipeline');
+            $idoklad_data = $transform_result['data'];
+            $idoklad_validation = $transform_result['validation'];
+
+            if (!$idoklad_validation['is_valid']) {
+                IDokladProcessor_Database::add_queue_step($email->id, 'ERROR: ChatGPT payload validation failed', array(
+                    'errors' => $idoklad_validation['errors']
+                ));
+                throw new Exception('ChatGPT payload validation failed: ' . implode(', ', $idoklad_validation['errors']));
+            }
+
+            IDokladProcessor_Database::add_queue_step($email->id, 'ChatGPT data transformed successfully', array(
                 'document_number' => $idoklad_data['DocumentNumber'] ?? 'N/A',
                 'items_count' => count($idoklad_data['Items'] ?? array()),
                 'currency_id' => $idoklad_data['CurrencyId'] ?? 'N/A',
@@ -617,7 +683,7 @@ class IDokladProcessor_EmailMonitor {
             // Use enhanced PDF.co AI parser for text-parsed data
             require_once IDOKLAD_PROCESSOR_PLUGIN_DIR . 'includes/class-pdf-co-ai-parser-enhanced.php';
             $parser = new IDokladProcessor_PDFCoAIParserEnhanced();
-            
+
             // For text-parsed data, use the actual PDF file if available
             if (!empty($email->attachment_path) && file_exists($email->attachment_path)) {
                 // Convert local file path to accessible URL
@@ -689,7 +755,9 @@ class IDokladProcessor_EmailMonitor {
         // Validate iDoklad payload
         if (isset($parser)) {
             // Use parser validation for text-parsed data
-            $idoklad_validation = $parser->validate_idoklad_payload($idoklad_data);
+            if ($idoklad_validation === null) {
+                $idoklad_validation = $parser->validate_idoklad_payload($idoklad_data);
+            }
             if (!$idoklad_validation['is_valid']) {
                 IDokladProcessor_Database::add_queue_step($email->id, 'ERROR: iDoklad payload validation failed', array(
                     'errors' => $idoklad_validation['errors']
