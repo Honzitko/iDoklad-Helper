@@ -586,7 +586,7 @@ class IDokladProcessor_EmailMonitorV3 {
         try {
             // Save attachment to temporary file
             $temp_file = $this->save_attachment_to_temp($attachment);
-            
+
             // Process PDF using existing processor
             // Use PDF processor if available
             if (class_exists('IDokladProcessor_PDFProcessor')) {
@@ -594,60 +594,93 @@ class IDokladProcessor_EmailMonitorV3 {
             } else {
                 throw new Exception('PDF processor class not available');
             }
-            $extracted_data = $pdf_processor->extract_text($temp_file);
-            
-            if (empty($extracted_data)) {
-                // Try AI parsing if available
-                // Use AI parser if available
-                if (class_exists('IDokladProcessor_PDFCoAIParser')) {
-                    $ai_parser = new IDokladProcessor_PDFCoAIParser();
-                } else {
-                    throw new Exception('AI parser not available');
+            $processing_engine = get_option('idoklad_processing_engine', 'pdfco');
+            $use_chatgpt_engine = ($processing_engine === 'chatgpt');
+
+            if ($use_chatgpt_engine) {
+                $chatgpt_api_key = get_option('idoklad_chatgpt_api_key');
+                if (empty($chatgpt_api_key)) {
+                    throw new Exception('ChatGPT API key is not configured');
                 }
-                $extracted_data = $ai_parser->parse_invoice($temp_file);
-            }
-            
-            if (!empty($extracted_data)) {
-                // Transform data to iDoklad format
-                // Use enhanced PDF.co AI parser for data transformation
+
+                $pdf_text = $pdf_processor->extract_text($temp_file);
+                if (empty($pdf_text)) {
+                    throw new Exception('Could not extract text from PDF for ChatGPT processing');
+                }
+
+                $chatgpt = new IDokladProcessor_ChatGPTIntegration();
+                $chatgpt_data = $chatgpt->extract_invoice_data($pdf_text);
+                $chatgpt_data['source'] = 'chatgpt';
+                $chatgpt_data['pdf_text'] = $pdf_text;
+                $chatgpt_data['extracted_at'] = current_time('mysql');
+
                 require_once IDOKLAD_PROCESSOR_PLUGIN_DIR . 'includes/class-pdf-co-ai-parser-enhanced.php';
                 $parser = new IDokladProcessor_PDFCoAIParserEnhanced();
-                
-                // For extracted data, create a basic iDoklad structure
-                $invoice_data = array(
-                    'DocumentNumber' => $extracted_data['document_number'] ?? 'EMAIL-' . date('YmdHis'),
-                    'DateOfIssue' => $extracted_data['date'] ?? date('Y-m-d'),
-                    'Description' => $extracted_data['description'] ?? 'Email-processed invoice',
-                    'Items' => array(
-                        array(
-                            'Name' => 'Email-processed item',
-                            'Amount' => 1.0,
-                            'UnitPrice' => $extracted_data['total'] ?? 0.0,
-                            'PriceType' => 0,
-                            'VatRateType' => 0
-                        )
-                    ),
-                    'CurrencyId' => 1,
-                    'DateOfReceiving' => date('Y-m-d')
-                );
-                
-                // Clean up temp file
+                $transform = $parser->transform_structured_data($chatgpt_data, 'chatgpt_v3');
+
+                if (!$transform['success']) {
+                    $errors = $transform['validation']['errors'] ?? array('Unknown validation error');
+                    throw new Exception('ChatGPT validation failed: ' . implode(', ', $errors));
+                }
+
                 unlink($temp_file);
-                
+
                 return array(
                     'success' => true,
-                    'invoice_data' => $invoice_data,
-                    'extracted_data' => $extracted_data
+                    'invoice_data' => $transform['data'],
+                    'extracted_data' => $chatgpt_data
                 );
+
             } else {
-                unlink($temp_file);
-                return array(
-                    'success' => false,
-                    'error' => 'Could not extract data from PDF'
-                );
+                $extracted_data = $pdf_processor->extract_text($temp_file);
+
+                if (empty($extracted_data) && class_exists('IDokladProcessor_PDFCoAIParser')) {
+                    $ai_parser = new IDokladProcessor_PDFCoAIParser();
+                    $extracted_data = $ai_parser->parse_invoice($temp_file);
+                }
+
+                if (!empty($extracted_data)) {
+                    require_once IDOKLAD_PROCESSOR_PLUGIN_DIR . 'includes/class-pdf-co-ai-parser-enhanced.php';
+                    $parser = new IDokladProcessor_PDFCoAIParserEnhanced();
+
+                    // For extracted data, create a basic iDoklad structure
+                    $invoice_data = array(
+                        'DocumentNumber' => $extracted_data['document_number'] ?? 'EMAIL-' . date('YmdHis'),
+                        'DateOfIssue' => $extracted_data['date'] ?? date('Y-m-d'),
+                        'Description' => $extracted_data['description'] ?? 'Email-processed invoice',
+                        'Items' => array(
+                            array(
+                                'Name' => 'Email-processed item',
+                                'Amount' => 1.0,
+                                'UnitPrice' => $extracted_data['total'] ?? 0.0,
+                                'PriceType' => 0,
+                                'VatRateType' => 0
+                            )
+                        ),
+                        'CurrencyId' => 1,
+                        'DateOfReceiving' => date('Y-m-d')
+                    );
+
+                    unlink($temp_file);
+
+                    return array(
+                        'success' => true,
+                        'invoice_data' => $invoice_data,
+                        'extracted_data' => $extracted_data
+                    );
+                } else {
+                    unlink($temp_file);
+                    return array(
+                        'success' => false,
+                        'error' => 'Could not extract data from PDF'
+                    );
+                }
             }
-            
+
         } catch (Exception $e) {
+            if (isset($temp_file) && file_exists($temp_file)) {
+                unlink($temp_file);
+            }
             return array(
                 'success' => false,
                 'error' => $e->getMessage()

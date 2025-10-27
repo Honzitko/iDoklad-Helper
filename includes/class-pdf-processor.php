@@ -23,7 +23,7 @@ class IDokladProcessor_PDFProcessor {
         // Use native parser first by default (no external dependencies)
         $this->use_native_parser_first = get_option('idoklad_use_native_parser_first', true);
         // Use PDF.co as primary processor (replaces all other methods)
-        $this->use_pdfco = get_option('idoklad_use_pdfco', true);
+        $this->use_pdfco = (bool) get_option('idoklad_use_pdfco', true);
     }
     
     /**
@@ -41,22 +41,51 @@ class IDokladProcessor_PDFProcessor {
             error_log('iDoklad PDF Processor: Extracting text from ' . $pdf_path);
         }
 
-        // ONLY use PDF.co - NO FALLBACKS!
-        // If PDF.co fails, the entire process STOPS
-        if ($queue_id) {
-            IDokladProcessor_Database::add_queue_step($queue_id, 'PDF Processing: Using PDF.co cloud service', null, false);
+        $can_use_pdfco = $this->use_pdfco && !empty(get_option('idoklad_pdfco_api_key'));
+        $text = '';
+
+        if ($can_use_pdfco) {
+            if ($queue_id) {
+                IDokladProcessor_Database::add_queue_step($queue_id, 'PDF Processing: Using PDF.co cloud service', null, false);
+            }
+
+            try {
+                require_once IDOKLAD_PROCESSOR_PLUGIN_DIR . 'includes/class-pdfco-processor.php';
+                $pdfco = new IDokladProcessor_PDFCoProcessor();
+                $text = $pdfco->extract_text($pdf_path, $queue_id);
+
+                if (get_option('idoklad_debug_mode')) {
+                    error_log('iDoklad PDF Processor: PDF.co extracted ' . strlen($text) . ' characters');
+                }
+            } catch (Exception $e) {
+                if ($queue_id) {
+                    IDokladProcessor_Database::add_queue_step($queue_id, 'PDF.co extraction failed, switching to local fallbacks', array(
+                        'error' => $e->getMessage()
+                    ), true);
+                }
+
+                if (get_option('idoklad_debug_mode')) {
+                    error_log('iDoklad PDF Processor: PDF.co extraction failed: ' . $e->getMessage());
+                }
+
+                $text = '';
+            }
         }
 
-        require_once IDOKLAD_PROCESSOR_PLUGIN_DIR . 'includes/class-pdfco-processor.php';
-        $pdfco = new IDokladProcessor_PDFCoProcessor();
-        $text = $pdfco->extract_text($pdf_path, $queue_id);
+        if (empty($text)) {
+            if ($queue_id) {
+                IDokladProcessor_Database::add_queue_step($queue_id, 'PDF Processing: Using local extraction fallbacks', null, false);
+            }
 
-        if (get_option('idoklad_debug_mode')) {
-            error_log('iDoklad PDF Processor: PDF.co extracted ' . strlen($text) . ' characters');
+            $text = $this->extract_with_fallbacks($pdf_path, $queue_id);
         }
 
         // Clean up extracted text
         $text = $this->clean_extracted_text($text);
+
+        if (empty($text)) {
+            throw new Exception('No text could be extracted from PDF using available methods');
+        }
 
         return $text;
     }
@@ -106,6 +135,58 @@ class IDokladProcessor_PDFProcessor {
     }
     
     /**
+     * Extract text using configured fallback methods
+     */
+    private function extract_with_fallbacks($pdf_path, $queue_id = null) {
+        $methods = $this->build_fallback_method_order();
+
+        foreach ($methods as $method_key => $callback) {
+            if ($queue_id) {
+                IDokladProcessor_Database::add_queue_step($queue_id, 'PDF Processing: Trying ' . $method_key . ' extraction method');
+            }
+
+            $text = call_user_func($callback, $pdf_path);
+
+            if (!empty($text)) {
+                if ($queue_id) {
+                    IDokladProcessor_Database::add_queue_step($queue_id, 'PDF Processing: ' . $method_key . ' extraction succeeded', array(
+                        'text_length' => strlen($text)
+                    ));
+                }
+
+                return $text;
+            }
+
+            if ($queue_id) {
+                IDokladProcessor_Database::add_queue_step($queue_id, 'PDF Processing: ' . $method_key . ' extraction failed');
+            }
+        }
+
+        return '';
+    }
+
+    /**
+     * Build fallback method order based on settings
+     */
+    private function build_fallback_method_order() {
+        $methods = array(
+            'native parser' => array($this, 'extract_with_native_parser'),
+            'pdftotext' => array($this, 'extract_with_pdftotext'),
+            'poppler' => array($this, 'extract_with_poppler'),
+            'ghostscript' => array($this, 'extract_with_ghostscript')
+        );
+
+        if (!$this->use_native_parser_first) {
+            // Move native parser to end if not preferred
+            $native = array('native parser' => $methods['native parser']);
+            unset($methods['native parser']);
+            $methods = $methods + $native;
+        }
+
+        return $methods;
+    }
+
+    /**
      * Extract text using native PHP parser
      */
     private function extract_with_native_parser($pdf_path) {
@@ -113,9 +194,9 @@ class IDokladProcessor_PDFProcessor {
             if (get_option('idoklad_debug_mode')) {
                 error_log('iDoklad PDF Processor: Trying native PHP parser');
             }
-            
+
             $text = $this->native_parser->extract_text($pdf_path);
-            
+
             if (!empty($text)) {
                 if (get_option('idoklad_debug_mode')) {
                     error_log('iDoklad PDF Processor: Native PHP parser succeeded');
@@ -127,10 +208,10 @@ class IDokladProcessor_PDFProcessor {
                 error_log('iDoklad PDF Processor: Native PHP parser failed: ' . $e->getMessage());
             }
         }
-        
+
         return '';
     }
-    
+
     /**
      * Extract text using pdftotext command
      */
@@ -138,21 +219,21 @@ class IDokladProcessor_PDFProcessor {
         if (!function_exists('exec')) {
             return '';
         }
-        
+
         $output_file = $this->temp_dir . '/pdf_text_' . uniqid() . '.txt';
         $command = "pdftotext -layout \"$pdf_path\" \"$output_file\" 2>/dev/null";
-        
+
         exec($command, $output, $return_code);
-        
+
         if ($return_code === 0 && file_exists($output_file)) {
             $text = file_get_contents($output_file);
             unlink($output_file);
             return $text;
         }
-        
+
         return '';
     }
-    
+
     /**
      * Extract text using Poppler utilities
      */
@@ -160,21 +241,21 @@ class IDokladProcessor_PDFProcessor {
         if (!function_exists('exec')) {
             return '';
         }
-        
+
         $output_file = $this->temp_dir . '/pdf_text_' . uniqid() . '.txt';
         $command = "pdftotext -enc UTF-8 \"$pdf_path\" \"$output_file\" 2>/dev/null";
-        
+
         exec($command, $output, $return_code);
-        
+
         if ($return_code === 0 && file_exists($output_file)) {
             $text = file_get_contents($output_file);
             unlink($output_file);
             return $text;
         }
-        
+
         return '';
     }
-    
+
     /**
      * Extract text using Ghostscript
      */
@@ -182,18 +263,18 @@ class IDokladProcessor_PDFProcessor {
         if (!function_exists('exec')) {
             return '';
         }
-        
+
         $output_file = $this->temp_dir . '/pdf_text_' . uniqid() . '.txt';
         $command = "gs -dNODISPLAY -dNOPAUSE -dBATCH -sDEVICE=txtwrite -sOutputFile=\"$output_file\" \"$pdf_path\" 2>/dev/null";
-        
+
         exec($command, $output, $return_code);
-        
+
         if ($return_code === 0 && file_exists($output_file)) {
             $text = file_get_contents($output_file);
             unlink($output_file);
             return $text;
         }
-        
+
         return '';
     }
     

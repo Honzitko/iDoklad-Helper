@@ -74,7 +74,42 @@ $users = IDokladProcessor_Database::get_all_authorized_users();
                     <div id="ocr-content"></div>
                 </div>
             </div>
-            
+
+            <!-- Test ChatGPT Extraction -->
+            <div class="idoklad-settings-section">
+                <h2>🤖 <?php _e('Test ChatGPT Invoice Extraction', 'idoklad-invoice-processor'); ?></h2>
+                <p><?php _e('Upload a PDF or paste extracted text to validate the ChatGPT pipeline end-to-end.', 'idoklad-invoice-processor'); ?></p>
+
+                <form id="test-chatgpt-form" enctype="multipart/form-data">
+                    <table class="form-table">
+                        <tr>
+                            <th scope="row"><?php _e('Upload PDF (optional)', 'idoklad-invoice-processor'); ?></th>
+                            <td>
+                                <input type="file" name="pdf_file" accept=".pdf" />
+                                <p class="description"><?php _e('If provided, the PDF will be parsed using the configured extraction engine before sending to ChatGPT.', 'idoklad-invoice-processor'); ?></p>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th scope="row"><?php _e('Invoice Text (optional)', 'idoklad-invoice-processor'); ?></th>
+                            <td>
+                                <textarea id="chatgpt-text-input" name="pdf_text" rows="8" style="width:100%; max-width:600px; font-family: monospace;" placeholder="Paste extracted invoice text here..."></textarea>
+                                <p class="description"><?php _e('Provide text if you prefer to bypass PDF parsing. You can reuse the output from the PDF or OCR tests.', 'idoklad-invoice-processor'); ?></p>
+                            </td>
+                        </tr>
+                    </table>
+
+                    <p>
+                        <button type="submit" class="button button-primary"><?php _e('Run ChatGPT Extraction', 'idoklad-invoice-processor'); ?></button>
+                        <button type="button" id="chatgpt-use-last-text" class="button button-secondary"><?php _e('Use Last Extracted Text', 'idoklad-invoice-processor'); ?></button>
+                    </p>
+                </form>
+
+                <div id="chatgpt-result" style="display:none; margin-top:20px;">
+                    <h3><?php _e('ChatGPT Results', 'idoklad-invoice-processor'); ?></h3>
+                    <div id="chatgpt-content"></div>
+                </div>
+            </div>
+
             <!-- Test 3: Zapier Webhook -->
             <div class="idoklad-settings-section">
                 <h2>⚡ <?php _e('Test Zapier Webhook', 'idoklad-invoice-processor'); ?></h2>
