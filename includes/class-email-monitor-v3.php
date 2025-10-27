@@ -380,31 +380,47 @@ class IDokladProcessor_EmailMonitorV3 {
     private function process_invoice_email($email_details, $authorized_user, $processing_result) {
         try {
             $this->logger->info('Processing invoice email from: ' . $email_details['from_email']);
-            
-            // Initialize iDoklad API v3
-            // TODO: iDoklad API integration removed - to be rebuilt
-            // if (class_exists('IDokladProcessor_IDokladAPIV3')) {
-            //     $idoklad_api = new IDokladProcessor_IDokladAPIV3($authorized_user);
-            // } else {
-            //     $idoklad_api = new IDokladProcessor_IDokladAPI($authorized_user);
-            // }
-            
+
+            $idoklad_api = $this->initialize_idoklad_api_integration($authorized_user);
+
             foreach ($email_details['attachments'] as $attachment) {
                 if (strtolower(pathinfo($attachment['filename'], PATHINFO_EXTENSION)) === 'pdf') {
                     // Process PDF attachment
                     $pdf_result = $this->process_pdf_attachment($attachment, $authorized_user, $email_details);
-                    
+
                     if ($pdf_result['success']) {
                         // Create invoice in iDoklad
                         $invoice_data = $pdf_result['invoice_data'];
-                        $invoice_result = $idoklad_api->create_received_invoice($invoice_data, $email_details);
-                        
+                        $invoice_result = $idoklad_api->create_invoice_complete_workflow($invoice_data);
+
+                        if (empty($invoice_result) || empty($invoice_result['success'])) {
+                            throw new Exception('iDoklad invoice creation did not return a success response');
+                        }
+
+                        $created_invoice_id = $invoice_result['invoice_id'] ?? null;
+                        if (!$created_invoice_id && isset($invoice_result['response_data']['Data']['Id'])) {
+                            $created_invoice_id = $invoice_result['response_data']['Data']['Id'];
+                        } elseif (!$created_invoice_id && isset($invoice_result['response_data']['Id'])) {
+                            $created_invoice_id = $invoice_result['response_data']['Id'];
+                        }
+
+                        $created_document_number = $invoice_result['document_number'] ?? null;
+                        if (!$created_document_number && isset($invoice_result['response_data']['Data']['DocumentNumber'])) {
+                            $created_document_number = $invoice_result['response_data']['Data']['DocumentNumber'];
+                        } elseif (!$created_document_number && isset($invoice_result['response_data']['DocumentNumber'])) {
+                            $created_document_number = $invoice_result['response_data']['DocumentNumber'];
+                        }
+
+                        if (empty($created_document_number) && !empty($invoice_data['DocumentNumber'])) {
+                            $created_document_number = $invoice_data['DocumentNumber'];
+                        }
+
                         $processing_result['created_records'][] = array(
                             'type' => 'invoice',
-                            'id' => $invoice_result['Id'],
-                            'document_number' => $invoice_result['DocumentNumber']
+                            'id' => $created_invoice_id,
+                            'document_number' => $created_document_number
                         );
-                        
+
                         $processing_result['documents_processed']++;
                     } else {
                         $processing_result['errors'][] = 'Failed to process PDF: ' . $pdf_result['error'];
@@ -426,23 +442,23 @@ class IDokladProcessor_EmailMonitorV3 {
     private function process_expense_email($email_details, $authorized_user, $processing_result) {
         try {
             $this->logger->info('Processing expense email from: ' . $email_details['from_email']);
-            
-            // TODO: iDoklad API integration removed - to be rebuilt
-            // if (class_exists('IDokladProcessor_IDokladAPIV3')) {
-            //     $idoklad_api = new IDokladProcessor_IDokladAPIV3($authorized_user);
-            // } else {
-            //     $idoklad_api = new IDokladProcessor_IDokladAPI($authorized_user);
-            // }
-            
+
+            $idoklad_api = $this->initialize_idoklad_api_integration($authorized_user);
+
+            if (!method_exists($idoklad_api, 'create_expense')) {
+                $processing_result['warnings'][] = 'Expense creation is not yet supported by the current iDoklad integration.';
+                return $processing_result;
+            }
+
             foreach ($email_details['attachments'] as $attachment) {
                 if (strtolower(pathinfo($attachment['filename'], PATHINFO_EXTENSION)) === 'pdf') {
                     $pdf_result = $this->process_pdf_attachment($attachment, $authorized_user, $email_details);
-                    
+
                     if ($pdf_result['success']) {
                         // Convert to expense data
                         $expense_data = $this->convert_to_expense_data($pdf_result['invoice_data']);
                         $expense_result = $idoklad_api->create_expense($expense_data, $email_details);
-                        
+
                         $processing_result['created_records'][] = array(
                             'type' => 'expense',
                             'id' => $expense_result['Id'],
@@ -470,19 +486,19 @@ class IDokladProcessor_EmailMonitorV3 {
     private function process_contact_update_email($email_details, $authorized_user, $processing_result) {
         try {
             $this->logger->info('Processing contact update email from: ' . $email_details['from_email']);
-            
+
             // Extract contact information from email body
             $contact_data = $this->extract_contact_data_from_email($email_details);
-            
+
             if (!empty($contact_data)) {
-                // TODO: iDoklad API integration removed - to be rebuilt
-            // if (class_exists('IDokladProcessor_IDokladAPIV3')) {
-            //     $idoklad_api = new IDokladProcessor_IDokladAPIV3($authorized_user);
-            // } else {
-            //     $idoklad_api = new IDokladProcessor_IDokladAPI($authorized_user);
-            // }
+                $idoklad_api = $this->initialize_idoklad_api_integration($authorized_user);
+
+                if (!method_exists($idoklad_api, 'get_or_create_contact')) {
+                    $processing_result['warnings'][] = 'Contact updates are not yet supported by the current iDoklad integration.';
+                    return $processing_result;
+                }
                 $contact_result = $idoklad_api->get_or_create_contact($contact_data, $email_details);
-                
+
                 $processing_result['created_records'][] = array(
                     'type' => 'contact',
                     'id' => $contact_result['Id'],
@@ -887,12 +903,12 @@ class IDokladProcessor_EmailMonitorV3 {
      */
     private function send_status_report($email_details, $authorized_user) {
         try {
-            // TODO: iDoklad API integration removed - to be rebuilt
-            // if (class_exists('IDokladProcessor_IDokladAPIV3')) {
-            //     $idoklad_api = new IDokladProcessor_IDokladAPIV3($authorized_user);
-            // } else {
-            //     $idoklad_api = new IDokladProcessor_IDokladAPI($authorized_user);
-            // }
+            $idoklad_api = $this->initialize_idoklad_api_integration($authorized_user);
+
+            if (!method_exists($idoklad_api, 'get_api_status')) {
+                throw new Exception('Status reporting is not available in the current iDoklad integration.');
+            }
+
             $status = $idoklad_api->get_api_status();
             
             $report = "iDoklad System Status Report\n\n";
@@ -914,6 +930,49 @@ class IDokladProcessor_EmailMonitorV3 {
         } catch (Exception $e) {
             $this->logger->error('Error sending status report: ' . $e->getMessage());
         }
+    }
+
+    /**
+     * Initialize the iDoklad API v3 integration using user or global credentials
+     */
+    private function initialize_idoklad_api_integration($authorized_user) {
+        $client_id = '';
+        $client_secret = '';
+
+        if ($authorized_user && !empty($authorized_user->idoklad_client_id) && !empty($authorized_user->idoklad_client_secret)) {
+            $client_id = $authorized_user->idoklad_client_id;
+            $client_secret = $authorized_user->idoklad_client_secret;
+
+            $user_identifier = '';
+            if (isset($authorized_user->email) && !empty($authorized_user->email)) {
+                $user_identifier = $authorized_user->email;
+            } elseif (isset($authorized_user->id)) {
+                $user_identifier = 'ID ' . $authorized_user->id;
+            }
+
+            if (!empty($user_identifier)) {
+                $this->logger->info('Using user-specific iDoklad credentials for ' . $user_identifier);
+            }
+        }
+
+        if (empty($client_id) || empty($client_secret)) {
+            $client_id = get_option('idoklad_client_id');
+            $client_secret = get_option('idoklad_client_secret');
+
+            if (!empty($client_id) && !empty($client_secret)) {
+                $this->logger->info('Using global iDoklad credentials from plugin settings');
+            }
+        }
+
+        if (empty($client_id) || empty($client_secret)) {
+            throw new Exception('iDoklad API credentials are not configured');
+        }
+
+        if (!class_exists('IDokladProcessor_IDokladAPIV3Integration')) {
+            require_once IDOKLAD_PROCESSOR_PLUGIN_DIR . 'includes/class-idoklad-api-v3-integration.php';
+        }
+
+        return new IDokladProcessor_IDokladAPIV3Integration($client_id, $client_secret);
     }
     
     /**
