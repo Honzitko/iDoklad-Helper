@@ -64,6 +64,7 @@ $integration_files = array(
 
 // Include PDF.co AI Parser enhanced components
 $pdf_co_files = array(
+    'includes/class-idoklad-czech-normalizer.php',
     'includes/class-pdf-co-ai-parser-enhanced.php',
     'includes/class-pdf-co-admin-debug.php'
 );
