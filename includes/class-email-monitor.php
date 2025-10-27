@@ -605,7 +605,24 @@ class IDokladProcessor_EmailMonitor {
         if (isset($extracted_data['ai_parsed']) && $extracted_data['ai_parsed'] === true) {
             // AI parser already returned iDoklad-formatted data
             $idoklad_data = $extracted_data;
-            
+
+            if (empty($idoklad_data['DateOfReceiving'])) {
+                $fallback_source = 'queue_created_at';
+                $fallback_timestamp = !empty($email->created_at) ? strtotime($email->created_at) : false;
+
+                if (!$fallback_timestamp) {
+                    $fallback_source = 'current_date';
+                    $fallback_timestamp = current_time('timestamp');
+                }
+
+                $idoklad_data['DateOfReceiving'] = date('Y-m-d', $fallback_timestamp);
+
+                IDokladProcessor_Database::add_queue_step($email->id, 'Applied DateOfReceiving fallback', array(
+                    'source' => $fallback_source,
+                    'value' => $idoklad_data['DateOfReceiving']
+                ), false);
+            }
+
             IDokladProcessor_Database::add_queue_step($email->id, 'Using AI-parsed iDoklad data directly', array(
                 'document_number' => $idoklad_data['DocumentNumber'] ?? 'N/A',
                 'items_count' => count($idoklad_data['Items'] ?? array()),
