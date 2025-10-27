@@ -441,49 +441,100 @@ class IDokladProcessor_PDFCoAIParserEnhanced {
             'errors' => array(),
             'warnings' => array(),
             'required_fields_present' => array(),
-            'required_fields_missing' => array()
+            'required_fields_missing' => array(),
+            'auto_fill_fields' => array()
         );
-        
-        $required_fields = array(
-            'DocumentNumber',
-            'DateOfIssue',
-            'PartnerName',
-            'Items'
-        );
-        
-        foreach ($required_fields as $field) {
-            if (isset($data[$field]) && !empty($data[$field])) {
-                $validation['required_fields_present'][] = $field;
+
+        $document_number = isset($data['DocumentNumber']) ? trim((string) $data['DocumentNumber']) : '';
+        if ($document_number !== '') {
+            $validation['required_fields_present'][] = 'DocumentNumber';
+        } else {
+            $validation['required_fields_missing'][] = 'DocumentNumber';
+            $validation['warnings'][] = 'DocumentNumber missing - a sequential number will be generated based on successful exports.';
+            $validation['auto_fill_fields']['DocumentNumber'] = 'sequential_counter';
+        }
+
+        $date_of_issue = isset($data['DateOfIssue']) ? trim((string) $data['DateOfIssue']) : '';
+        if ($date_of_issue !== '') {
+            $validation['required_fields_present'][] = 'DateOfIssue';
+        } else {
+            $validation['required_fields_missing'][] = 'DateOfIssue';
+
+            if (!empty($data['DateOfReceiving'])) {
+                $validation['warnings'][] = 'DateOfIssue missing - DateOfReceiving will be reused when building the payload.';
+                $validation['auto_fill_fields']['DateOfIssue'] = 'use_date_of_receiving';
             } else {
-                $validation['required_fields_missing'][] = $field;
-                $validation['errors'][] = "Required field missing: $field";
+                $validation['warnings'][] = 'DateOfIssue missing - email received timestamp will be used during payload build.';
+                $validation['auto_fill_fields']['DateOfIssue'] = 'email_received_timestamp';
+            }
+        }
+
+        $partner_id = isset($data['PartnerId']) ? $data['PartnerId'] : null;
+        $partner_name = isset($data['PartnerName']) ? trim((string) $data['PartnerName']) : '';
+
+        if (!empty($partner_id)) {
+            if (!in_array('PartnerId', $validation['required_fields_present'], true)) {
+                $validation['required_fields_present'][] = 'PartnerId';
+            }
+        } else {
+            if (!in_array('PartnerId', $validation['required_fields_missing'], true)) {
+                $validation['required_fields_missing'][] = 'PartnerId';
+            }
+
+            if ($partner_name !== '') {
+                if (!in_array('PartnerName', $validation['required_fields_present'], true)) {
+                    $validation['required_fields_present'][] = 'PartnerName';
+                }
+                $validation['warnings'][] = 'PartnerId missing - the integration will attempt to resolve it via the iDoklad REST API.';
+                $validation['auto_fill_fields']['PartnerId'] = 'rest_lookup';
+            } else {
+                if (!in_array('PartnerName', $validation['required_fields_missing'], true)) {
+                    $validation['required_fields_missing'][] = 'PartnerName';
+                }
+                $validation['errors'][] = 'Missing partner identification (PartnerId or PartnerName).';
                 $validation['is_valid'] = false;
             }
         }
-        
-        // Validate items
-        if (isset($data['Items']) && is_array($data['Items'])) {
-            if (empty($data['Items'])) {
-                $validation['errors'][] = "Items array is empty";
-                $validation['is_valid'] = false;
-            } else {
-                foreach ($data['Items'] as $index => $item) {
-                    if (!isset($item['Name']) || empty($item['Name'])) {
-                        $validation['errors'][] = "Item $index missing name";
-                        $validation['is_valid'] = false;
-                    }
-                    if (!isset($item['Amount']) || $item['Amount'] <= 0) {
-                        $validation['warnings'][] = "Item $index has invalid amount";
-                    }
-                    if (!isset($item['UnitPrice']) || $item['UnitPrice'] <= 0) {
-                        $validation['warnings'][] = "Item $index has invalid unit price";
-                    }
+
+        $items_present = isset($data['Items']) && is_array($data['Items']) && !empty($data['Items']);
+
+        if ($items_present) {
+            $validation['required_fields_present'][] = 'Items';
+
+            foreach ($data['Items'] as $index => $item) {
+                if (!is_array($item)) {
+                    $validation['warnings'][] = "Item $index is not a valid array - default items will be used.";
+                    $validation['auto_fill_fields']['Items'] = 'default_items';
+                    $items_present = false;
+                    break;
+                }
+
+                if (!isset($item['Name']) || trim((string) $item['Name']) === '') {
+                    $validation['warnings'][] = "Item $index missing name - default items will be used.";
+                    $validation['auto_fill_fields']['Items'] = 'default_items';
+                    $items_present = false;
+                    break;
+                }
+
+                if (!isset($item['Amount']) || $item['Amount'] <= 0) {
+                    $validation['warnings'][] = "Item $index has invalid amount.";
+                }
+                if (!isset($item['UnitPrice']) || $item['UnitPrice'] <= 0) {
+                    $validation['warnings'][] = "Item $index has invalid unit price.";
                 }
             }
         }
-        
+
+        if (!$items_present) {
+            if (!in_array('Items', $validation['required_fields_missing'], true)) {
+                $validation['required_fields_missing'][] = 'Items';
+            }
+            $validation['warnings'][] = 'Items missing - default service item will be injected when preparing the invoice payload.';
+            $validation['auto_fill_fields']['Items'] = 'default_items';
+        }
+
         $this->log_step('Payload validation completed', array('validation' => $validation));
-        
+
         return $validation;
     }
     
