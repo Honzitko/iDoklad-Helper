@@ -39,6 +39,7 @@ class IDokladProcessor_Admin {
         add_action('wp_ajax_idoklad_get_parsing_methods', array($this, 'get_parsing_methods'));
         add_action('wp_ajax_idoklad_test_pdfco', array($this, 'test_pdfco_connection'));
         add_action('wp_ajax_idoklad_test_ai_parser', array($this, 'test_ai_parser'));
+        add_action('wp_ajax_idoklad_test_chatgpt_invoice', array($this, 'test_chatgpt_invoice'));
         
         // Dashboard AJAX handlers
         add_action('wp_ajax_idoklad_force_email_check', array($this, 'force_email_check'));
@@ -185,11 +186,19 @@ class IDokladProcessor_Admin {
         // Zapier settings
         register_setting('idoklad_zapier_settings', 'idoklad_zapier_webhook_url');
         
+        // Processing engine settings
+        register_setting('idoklad_processing_settings', 'idoklad_processing_engine');
+
         // PDF.co settings (PRIMARY)
         register_setting('idoklad_pdfco_settings', 'idoklad_use_pdfco');
         register_setting('idoklad_pdfco_settings', 'idoklad_pdfco_api_key');
         register_setting('idoklad_pdfco_settings', 'idoklad_use_ai_parser');
-        
+
+        // ChatGPT settings
+        register_setting('idoklad_chatgpt_settings', 'idoklad_chatgpt_api_key');
+        register_setting('idoklad_chatgpt_settings', 'idoklad_chatgpt_model');
+        register_setting('idoklad_chatgpt_settings', 'idoklad_chatgpt_prompt');
+
         // PDF processing settings (FALLBACK)
         register_setting('idoklad_pdf_settings', 'idoklad_use_native_parser_first');
         
@@ -369,21 +378,35 @@ class IDokladProcessor_Admin {
             wp_die(__('Security check failed', 'idoklad-invoice-processor'));
         }
         
-        // Save PDF.co settings (PRIMARY)
-        if (isset($_POST['use_pdfco'])) {
-            update_option('idoklad_use_pdfco', 1);
-        } else {
-            update_option('idoklad_use_pdfco', 0);
+        // Save processing engine selection
+        $processing_engine = isset($_POST['processing_engine']) ? sanitize_text_field($_POST['processing_engine']) : 'pdfco';
+        if (!in_array($processing_engine, array('pdfco', 'chatgpt'), true)) {
+            $processing_engine = 'pdfco';
         }
-        
+
+        update_option('idoklad_processing_engine', $processing_engine);
+        update_option('idoklad_use_pdfco', $processing_engine === 'pdfco' ? 1 : 0);
+
         if (isset($_POST['pdfco_api_key'])) {
             update_option('idoklad_pdfco_api_key', sanitize_text_field($_POST['pdfco_api_key']));
         }
-        
+
         if (isset($_POST['use_ai_parser'])) {
             update_option('idoklad_use_ai_parser', 1);
         } else {
             update_option('idoklad_use_ai_parser', 0);
+        }
+
+        if (isset($_POST['chatgpt_api_key'])) {
+            update_option('idoklad_chatgpt_api_key', sanitize_text_field($_POST['chatgpt_api_key']));
+        }
+
+        if (isset($_POST['chatgpt_model'])) {
+            update_option('idoklad_chatgpt_model', sanitize_text_field($_POST['chatgpt_model']));
+        }
+
+        if (isset($_POST['chatgpt_prompt'])) {
+            update_option('idoklad_chatgpt_prompt', sanitize_textarea_field($_POST['chatgpt_prompt']));
         }
         
         // Save email settings
@@ -1619,6 +1642,82 @@ class IDokladProcessor_Admin {
             
         } catch (Exception $e) {
             wp_send_json_error(__('AI Parser test failed: ', 'idoklad-invoice-processor') . $e->getMessage());
+        }
+    }
+
+    /**
+     * Test ChatGPT invoice extraction (AJAX)
+     */
+    public function test_chatgpt_invoice() {
+        check_ajax_referer('idoklad_admin_nonce', 'nonce');
+
+        if (!current_user_can('manage_options')) {
+            wp_die(__('Insufficient permissions', 'idoklad-invoice-processor'));
+        }
+
+        $api_key = get_option('idoklad_chatgpt_api_key');
+        if (empty($api_key)) {
+            wp_send_json_error(__('ChatGPT API key is not configured', 'idoklad-invoice-processor'));
+        }
+
+        $pdf_text = '';
+        $temp_file = null;
+
+        try {
+            if (!empty($_FILES['pdf_file']['tmp_name'])) {
+                if (!function_exists('wp_tempnam')) {
+                    require_once ABSPATH . 'wp-admin/includes/file.php';
+                }
+                $temp_file = wp_tempnam($_FILES['pdf_file']['name']);
+                if (!$temp_file) {
+                    throw new Exception(__('Unable to create temporary file for upload', 'idoklad-invoice-processor'));
+                }
+
+                if (!move_uploaded_file($_FILES['pdf_file']['tmp_name'], $temp_file)) {
+                    throw new Exception(__('Failed to move uploaded PDF for processing', 'idoklad-invoice-processor'));
+                }
+
+                $pdf_processor = new IDokladProcessor_PDFProcessor();
+                $pdf_text = $pdf_processor->extract_text($temp_file);
+            }
+
+            if (empty($pdf_text) && isset($_POST['pdf_text'])) {
+                $pdf_text = sanitize_textarea_field(wp_unslash($_POST['pdf_text']));
+            }
+
+            $pdf_text = trim($pdf_text);
+
+            if (empty($pdf_text)) {
+                throw new Exception(__('Provide a PDF file or extracted text to run the ChatGPT test.', 'idoklad-invoice-processor'));
+            }
+
+            $chatgpt = new IDokladProcessor_ChatGPTIntegration();
+            $extracted_data = $chatgpt->extract_invoice_data($pdf_text);
+
+            // Attach diagnostics metadata
+            $extracted_data['source'] = 'chatgpt';
+            $extracted_data['pdf_text'] = $pdf_text;
+
+            $parser = new IDokladProcessor_PDFCoAIParserEnhanced();
+            $transformation = $parser->transform_structured_data($extracted_data, 'chatgpt_diagnostics');
+
+            $text_preview = function_exists('mb_substr') ? mb_substr($pdf_text, 0, 500) : substr($pdf_text, 0, 500);
+
+            wp_send_json_success(array(
+                'model' => get_option('idoklad_chatgpt_model', 'gpt-4o'),
+                'text_length' => strlen($pdf_text),
+                'text_preview' => $text_preview,
+                'extracted_data' => $extracted_data,
+                'idoklad_data' => $transformation['data'],
+                'validation' => $transformation['validation']
+            ));
+
+        } catch (Exception $e) {
+            wp_send_json_error($e->getMessage());
+        } finally {
+            if ($temp_file && file_exists($temp_file)) {
+                unlink($temp_file);
+            }
         }
     }
     

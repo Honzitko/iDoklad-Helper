@@ -6,6 +6,13 @@
 if (!defined('ABSPATH')) {
     exit;
 }
+
+$processing_engine = get_option('idoklad_processing_engine', 'pdfco');
+$chatgpt_models = array();
+if (class_exists('IDokladProcessor_ChatGPTIntegration')) {
+    $chatgpt_instance = new IDokladProcessor_ChatGPTIntegration();
+    $chatgpt_models = $chatgpt_instance->get_available_models();
+}
 ?>
 
 <div class="wrap">
@@ -16,36 +23,49 @@ if (!defined('ABSPATH')) {
             <form method="post" action="">
                 <?php wp_nonce_field('idoklad_settings_nonce'); ?>
                 
-                <!-- PDF.co Settings (PRIMARY) -->
-                <div class="idoklad-settings-section" style="border: 3px solid #0073aa; background: #f0f8ff;">
-                    <h2 style="color: #0073aa;">📄 PDF.co Cloud Processing (Recommended)</h2>
-                    <p class="description" style="font-size: 14px; background: #e5f5fa; padding: 15px; border-radius: 4px; margin-bottom: 20px;">
-                        <strong>PDF.co is the recommended method for PDF processing.</strong><br>
-                        It handles both regular PDFs and scanned documents (OCR) automatically in the cloud.<br>
-                        <strong>Replaces all other PDF processing methods when enabled.</strong><br>
-                        Get free API key (300 credits/month) at <a href="https://pdf.co/" target="_blank">pdf.co →</a>
+                <!-- Processing Engine Selection -->
+                <div class="idoklad-settings-section" style="border: 3px solid #6f42c1; background: #f7f3ff;">
+                    <h2 style="color: #6f42c1;">🤖 <?php _e('Invoice Processing Engine', 'idoklad-invoice-processor'); ?></h2>
+                    <p class="description" style="font-size: 14px; background: #ede7ff; padding: 15px; border-radius: 4px; margin-bottom: 20px;">
+                        <?php _e('Choose which AI service should extract data from incoming invoices. PDF.co remains the default for backward compatibility.', 'idoklad-invoice-processor'); ?>
                     </p>
-                    
+
                     <table class="form-table">
                         <tr>
-                            <th scope="row">
-                                <label for="use_pdfco"><?php _e('Enable PDF.co', 'idoklad-invoice-processor'); ?></label>
-                            </th>
+                            <th scope="row"><?php _e('Processing Method', 'idoklad-invoice-processor'); ?></th>
                             <td>
-                                <label>
-                                    <input type="checkbox" 
-                                           id="use_pdfco" 
-                                           name="use_pdfco" 
-                                           value="1" 
-                                           <?php checked(get_option('idoklad_use_pdfco'), true); ?>>
-                                    <?php _e('Use PDF.co for all PDF processing (recommended)', 'idoklad-invoice-processor'); ?>
+                                <label style="display:block; margin-bottom:8px;">
+                                    <input type="radio"
+                                           name="processing_engine"
+                                           value="pdfco"
+                                           <?php checked($processing_engine, 'pdfco'); ?> />
+                                    <strong><?php _e('PDF.co Cloud Processing (recommended)', 'idoklad-invoice-processor'); ?></strong><br>
+                                    <span class="description"><?php _e('Uses PDF.co for text + OCR extraction and structured invoice parsing.', 'idoklad-invoice-processor'); ?></span>
                                 </label>
-                                <p class="description">
-                                    <?php _e('When enabled, PDF.co will handle all PDF processing (regular text + OCR). Other methods will be used as fallback only.', 'idoklad-invoice-processor'); ?>
-                                </p>
+                                <label style="display:block;">
+                                    <input type="radio"
+                                           name="processing_engine"
+                                           value="chatgpt"
+                                           <?php checked($processing_engine, 'chatgpt'); ?> />
+                                    <strong><?php _e('ChatGPT Invoice Extraction (beta)', 'idoklad-invoice-processor'); ?></strong><br>
+                                    <span class="description"><?php _e('Extracts invoice data using OpenAI models and transforms it locally for iDoklad.', 'idoklad-invoice-processor'); ?></span>
+                                </label>
                             </td>
                         </tr>
-                        
+                    </table>
+                </div>
+
+                <!-- PDF.co Settings (PRIMARY) -->
+                <div class="idoklad-settings-section" style="border: 3px solid #0073aa; background: #f0f8ff;">
+                    <h2 style="color: #0073aa;">📄 PDF.co Cloud Processing</h2>
+                    <p class="description" style="font-size: 14px; background: #e5f5fa; padding: 15px; border-radius: 4px; margin-bottom: 20px;">
+                        <strong><?php _e('PDF.co is the recommended method for PDF processing.', 'idoklad-invoice-processor'); ?></strong><br>
+                        <?php _e('It handles both regular PDFs and scanned documents (OCR) automatically in the cloud.', 'idoklad-invoice-processor'); ?><br>
+                        <?php _e('Enable PDF.co above to route all invoices through the cloud service.', 'idoklad-invoice-processor'); ?><br>
+                        <?php _e('Get a free API key (300 credits/month) at', 'idoklad-invoice-processor'); ?> <a href="https://pdf.co/" target="_blank">pdf.co →</a>
+                    </p>
+
+                    <table class="form-table">
                         <tr>
                             <th scope="row">
                                 <label for="pdfco_api_key"><?php _e('PDF.co API Key', 'idoklad-invoice-processor'); ?> *</label>
@@ -74,23 +94,92 @@ if (!defined('ABSPATH')) {
                                 </p>
                             </td>
                         </tr>
-                        
+
                         <tr>
                             <th scope="row">
                                 <label for="use_ai_parser"><?php _e('Enable AI Invoice Parser', 'idoklad-invoice-processor'); ?></label>
                             </th>
                             <td>
                                 <label>
-                                    <input type="checkbox" 
-                                           id="use_ai_parser" 
-                                           name="use_ai_parser" 
-                                           value="1" 
+                                    <input type="checkbox"
+                                           id="use_ai_parser"
+                                           name="use_ai_parser"
+                                           value="1"
                                            <?php checked(get_option('idoklad_use_ai_parser'), true); ?>>
                                     <?php _e('Use PDF.co AI Invoice Parser for structured data extraction', 'idoklad-invoice-processor'); ?>
                                 </label>
                                 <p class="description">
-                                    <?php _e('When enabled, uses PDF.co\'s AI Invoice Parser to extract structured invoice data (invoice number, amounts, dates, etc.) instead of just text. More accurate than text parsing.', 'idoklad-invoice-processor'); ?>
+                                    <?php _e('When enabled, uses PDF.co\'s AI Invoice Parser to extract structured invoice data (invoice number, amounts, dates, etc.) instead of just text. More accurate than text parsing. Only applies when PDF.co is the selected engine.', 'idoklad-invoice-processor'); ?>
                                 </p>
+                            </td>
+                        </tr>
+                    </table>
+                </div>
+
+                <!-- ChatGPT Settings -->
+                <div class="idoklad-settings-section" style="border: 3px solid #1f6feb; background: #eef6ff;">
+                    <h2 style="color: #1f6feb;">🧠 <?php _e('ChatGPT Invoice Extraction', 'idoklad-invoice-processor'); ?></h2>
+                    <p class="description" style="font-size: 14px; background: #dceeff; padding: 15px; border-radius: 4px; margin-bottom: 20px;">
+                        <?php _e('Provide your OpenAI credentials to extract invoice data with ChatGPT. The extracted data is transformed locally and pushed through the same validation pipeline as PDF.co.', 'idoklad-invoice-processor'); ?>
+                    </p>
+
+                    <table class="form-table">
+                        <tr>
+                            <th scope="row">
+                                <label for="chatgpt_api_key"><?php _e('OpenAI API Key', 'idoklad-invoice-processor'); ?> *</label>
+                            </th>
+                            <td>
+                                <input type="password"
+                                       id="chatgpt_api_key"
+                                       name="chatgpt_api_key"
+                                       value="<?php echo esc_attr(get_option('idoklad_chatgpt_api_key')); ?>"
+                                       class="regular-text"
+                                       style="font-family: monospace;"
+                                       placeholder="sk-..." />
+                                <p class="description">
+                                    <?php _e('Generate an API key in the OpenAI dashboard. Required when ChatGPT is the selected engine.', 'idoklad-invoice-processor'); ?>
+                                </p>
+                                <p>
+                                    <button type="button" id="test-chatgpt-connection" class="button button-secondary">
+                                        <?php _e('Test ChatGPT Connection', 'idoklad-invoice-processor'); ?>
+                                    </button>
+                                    <button type="button" id="refresh-chatgpt-models" class="button button-secondary">
+                                        <?php _e('Refresh Model List', 'idoklad-invoice-processor'); ?>
+                                    </button>
+                                    <span id="chatgpt-test-result" style="margin-left: 10px;"></span>
+                                </p>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th scope="row">
+                                <label for="chatgpt_model"><?php _e('Preferred Model', 'idoklad-invoice-processor'); ?></label>
+                            </th>
+                            <td>
+                                <select id="chatgpt_model" name="chatgpt_model" style="min-width: 280px;">
+                                    <?php
+                                    $selected_model = get_option('idoklad_chatgpt_model', 'gpt-4o');
+                                    if (!empty($chatgpt_models)) {
+                                        foreach ($chatgpt_models as $model_key => $label) {
+                                            printf('<option value="%s" %s>%s</option>', esc_attr($model_key), selected($selected_model, $model_key, false), esc_html($label));
+                                        }
+                                    } else {
+                                        printf('<option value="%s" %s>%s</option>', esc_attr($selected_model), 'selected', esc_html($selected_model));
+                                    }
+                                    ?>
+                                </select>
+                                <p class="description"><?php _e('The plugin will auto-detect a compatible model if the selected one becomes unavailable.', 'idoklad-invoice-processor'); ?></p>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th scope="row">
+                                <label for="chatgpt_prompt"><?php _e('Extraction Prompt', 'idoklad-invoice-processor'); ?></label>
+                            </th>
+                            <td>
+                                <textarea id="chatgpt_prompt"
+                                          name="chatgpt_prompt"
+                                          rows="6"
+                                          style="width:100%; max-width:600px; font-family: monospace;"><?php echo esc_textarea(get_option('idoklad_chatgpt_prompt', 'Extract invoice data from this PDF. Return JSON with: invoice_number, date, total_amount, supplier_name, supplier_vat_number, items (array with name, quantity, price), currency. Validate data completeness.')); ?></textarea>
+                                <p class="description"><?php _e('Customize the prompt sent to ChatGPT. Keep the instructions concise and request JSON output.', 'idoklad-invoice-processor'); ?></p>
                             </td>
                         </tr>
                     </table>
