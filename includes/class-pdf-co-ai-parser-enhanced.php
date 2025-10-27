@@ -356,8 +356,16 @@ class IDokladProcessor_PDFCoAIParserEnhanced {
         $idoklad_data['ItemsTextSuffix'] = 'Thank you for your business.';
         $idoklad_data['ReportLanguage'] = 1;
         
+        if (class_exists('IDokladProcessor_CzechNormalizer')) {
+            $normalizer = new IDokladProcessor_CzechNormalizer();
+            $czech_payload = $normalizer->convert_payload($idoklad_data);
+            $idoklad_data['HumanReadableCzech'] = $czech_payload['structured'];
+            $idoklad_data['HumanReadableCzechSummary'] = $czech_payload['summary'];
+            $this->log_step('Czech normalization added', array('human_readable' => $czech_payload));
+        }
+
         $this->log_step('iDoklad format transformation completed', array('idoklad_data' => $idoklad_data));
-        
+
         return $idoklad_data;
     }
     
