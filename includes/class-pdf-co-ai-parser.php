@@ -264,65 +264,163 @@ class IDokladProcessor_PDFCoAIParser {
      * Since we're using iDoklad custom fields, the data should already be in the correct format
      */
     private function prepare_idoklad_data($parsed_data) {
-        // The AI parser should return data in iDoklad format due to custom fields
-        // We just need to ensure required fields are present and add metadata
-        
-        $idoklad_data = $parsed_data;
-        
-        // Ensure required fields have default values if missing
-        if (!isset($idoklad_data['DocumentSerialNumber'])) {
-            $idoklad_data['DocumentSerialNumber'] = 1;
+        // PDF.co currently returns invoice information inside a "data" section.
+        // Extract the actual payload and transform it into the structure our
+        // workflow expects before calling the iDoklad API.
+
+        $raw_payload = $parsed_data;
+        $response_metadata = array();
+
+        if (isset($parsed_data['data']) && is_array($parsed_data['data'])) {
+            $raw_payload = $parsed_data['data'];
+            $response_metadata = $parsed_data;
+            unset($response_metadata['data']);
         }
-        
-        if (!isset($idoklad_data['IsIncomeTax'])) {
-            $idoklad_data['IsIncomeTax'] = false;
+
+        $idoklad_data = array();
+
+        // Basic document details
+        $idoklad_data['DocumentNumber'] = $this->extract_field_value($raw_payload, array('DocumentNumber', 'document_number', 'InvoiceNumber', 'invoice_number', 'number'))
+            ?: 'AI-' . date('YmdHis');
+        $idoklad_data['document_number'] = $idoklad_data['DocumentNumber'];
+        $idoklad_data['invoice_number'] = $idoklad_data['DocumentNumber'];
+
+        $idoklad_data['DateOfIssue'] = $this->normalize_date($this->extract_field_value($raw_payload, array('DateOfIssue', 'date', 'InvoiceDate', 'invoice_date', 'IssueDate', 'issue_date')))
+            ?: date('Y-m-d');
+        $idoklad_data['date'] = $idoklad_data['DateOfIssue'];
+
+        $idoklad_data['DateOfReceiving'] = $this->normalize_date($this->extract_field_value($raw_payload, array('DateOfReceiving', 'delivery_date', 'received_at', 'DateReceived')));
+        $idoklad_data['DateOfTaxing'] = $this->normalize_date($this->extract_field_value($raw_payload, array('DateOfTaxing', 'tax_date', 'vat_date')));
+        $idoklad_data['DateOfMaturity'] = $this->normalize_date($this->extract_field_value($raw_payload, array('DateOfMaturity', 'due_date', 'DueDate', 'maturity_date')));
+
+        // Partner (supplier) information
+        $partner_sources = array($raw_payload);
+        foreach (array('supplier', 'vendor', 'partner', 'seller') as $partner_key) {
+            if (isset($raw_payload[$partner_key]) && is_array($raw_payload[$partner_key])) {
+                $partner_sources[] = $raw_payload[$partner_key];
+            }
         }
-        
-        if (!isset($idoklad_data['PartnerId'])) {
-            $idoklad_data['PartnerId'] = null; // Let iDoklad create partner automatically
+
+        $idoklad_data['PartnerName'] = $this->extract_from_sources($partner_sources, array('PartnerName', 'partner_name', 'SupplierName', 'supplier_name', 'VendorName', 'vendor_name', 'name', 'company', 'company_name'));
+        if (empty($idoklad_data['PartnerName'])) {
+            $idoklad_data['PartnerName'] = 'Unknown supplier';
         }
-        
-        if (!isset($idoklad_data['ExchangeRate'])) {
+
+        $idoklad_data['PartnerAddress'] = $this->extract_from_sources($partner_sources, array('PartnerAddress', 'partner_address', 'SupplierAddress', 'supplier_address', 'address', 'street', 'line1'));
+        $idoklad_data['PartnerIdentificationNumber'] = $this->extract_from_sources($partner_sources, array('PartnerIdentificationNumber', 'supplier_identification_number', 'vat', 'vat_number', 'VATNumber', 'ico', 'ic', 'registration_number'));
+        $idoklad_data['supplier_name'] = $idoklad_data['PartnerName'];
+
+        // Contact details (optional but helpful for notifications)
+        $idoklad_data['partner_email'] = $this->extract_from_sources($partner_sources, array('email', 'Email', 'contact_email'));
+        $idoklad_data['PartnerEmail'] = $idoklad_data['partner_email'];
+
+        // Payment symbols
+        $idoklad_data['VariableSymbol'] = $this->extract_field_value($raw_payload, array('VariableSymbol', 'variable_symbol', 'VS'));
+        $idoklad_data['ConstantSymbol'] = $this->extract_field_value($raw_payload, array('ConstantSymbol', 'constant_symbol', 'KS'));
+        $idoklad_data['SpecificSymbol'] = $this->extract_field_value($raw_payload, array('SpecificSymbol', 'specific_symbol', 'SS'));
+
+        // Banking
+        $idoklad_data['BankAccountNumber'] = $this->extract_from_sources($partner_sources, array('BankAccountNumber', 'bank_account_number', 'account_number', 'bank_account'));
+        $idoklad_data['Iban'] = $this->extract_from_sources($partner_sources, array('Iban', 'iban'));
+        $idoklad_data['Swift'] = $this->extract_from_sources($partner_sources, array('Swift', 'swift', 'Bic', 'bic', 'BIC'));
+
+        // Description and notes
+        $idoklad_data['Description'] = $this->extract_field_value($raw_payload, array('Description', 'description', 'title', 'subject'));
+        if (empty($idoklad_data['Description'])) {
+            $idoklad_data['Description'] = 'Faktura od ' . $idoklad_data['PartnerName'] . ' č. ' . $idoklad_data['DocumentNumber'];
+        }
+        $idoklad_data['Note'] = $this->extract_field_value($raw_payload, array('Note', 'note', 'comments'));
+
+        // Financial information
+        $currency_code = strtoupper($this->extract_field_value($raw_payload, array('Currency', 'currency', 'currency_code', 'CurrencyCode')) ?: 'CZK');
+        $idoklad_data['CurrencyId'] = $this->get_currency_id($currency_code);
+        $idoklad_data['CurrencyCode'] = $currency_code;
+        $idoklad_data['ExchangeRate'] = $this->normalize_amount($this->extract_field_value($raw_payload, array('ExchangeRate', 'exchange_rate')));
+        if (empty($idoklad_data['ExchangeRate'])) {
             $idoklad_data['ExchangeRate'] = 1;
         }
-        
-        if (!isset($idoklad_data['ExchangeRateAmount'])) {
+        $idoklad_data['ExchangeRateAmount'] = $this->normalize_amount($this->extract_field_value($raw_payload, array('ExchangeRateAmount', 'exchange_rate_amount')));
+        if (empty($idoklad_data['ExchangeRateAmount'])) {
             $idoklad_data['ExchangeRateAmount'] = 1;
         }
-        
-        if (!isset($idoklad_data['PaymentStatus'])) {
-            $idoklad_data['PaymentStatus'] = 0; // Unpaid
+
+        $idoklad_data['total_amount'] = $this->normalize_amount($this->extract_field_value($raw_payload, array('total_amount', 'total', 'grand_total', 'amount_due')));
+        $idoklad_data['subtotal'] = $this->normalize_amount($this->extract_field_value($raw_payload, array('subtotal', 'sub_total', 'net_total')));
+        $idoklad_data['tax_total'] = $this->normalize_amount($this->extract_field_value($raw_payload, array('tax_total', 'tax', 'vat_total')));
+        if (!isset($idoklad_data['total']) && $idoklad_data['total_amount'] !== null) {
+            $idoklad_data['total'] = $idoklad_data['total_amount'];
         }
-        
-        if (!isset($idoklad_data['PaymentOptionId'])) {
-            $idoklad_data['PaymentOptionId'] = 1; // Bank transfer
+
+        // Items (both lowercase and iDoklad format)
+        $items = $this->extract_items_for_idoklad($raw_payload);
+        if (empty($items)) {
+            $fallback_price = $idoklad_data['total_amount'] ?? 0;
+            $items[] = array(
+                'Name' => 'Invoice total',
+                'Amount' => 1.0,
+                'UnitPrice' => $fallback_price,
+                'Unit' => 'pcs',
+                'PriceType' => 1,
+                'VatRateType' => 2,
+                'VatRate' => 0,
+                'IsTaxMovement' => false,
+                'DiscountPercentage' => 0.0
+            );
         }
-        
-        if (!isset($idoklad_data['CurrencyId'])) {
-            $idoklad_data['CurrencyId'] = 1; // CZK
+        $idoklad_data['Items'] = $items;
+        $idoklad_data['items'] = $items;
+
+        // Required defaults for iDoklad API
+        $serial_number = $this->normalize_amount($this->extract_field_value($raw_payload, array('DocumentSerialNumber', 'document_serial_number')));
+        $idoklad_data['DocumentSerialNumber'] = $serial_number !== null ? intval($serial_number) : 1;
+
+        $idoklad_data['IsIncomeTax'] = false;
+
+        $partner_id = $this->normalize_amount($this->extract_field_value($raw_payload, array('PartnerId', 'partner_id')));
+        $idoklad_data['PartnerId'] = $partner_id !== null ? intval($partner_id) : null;
+
+        $payment_status = $this->normalize_amount($this->extract_field_value($raw_payload, array('PaymentStatus', 'payment_status')));
+        $idoklad_data['PaymentStatus'] = $payment_status !== null ? intval($payment_status) : 0;
+
+        $payment_option = $this->normalize_amount($this->extract_field_value($raw_payload, array('PaymentOptionId', 'payment_option_id')));
+        $idoklad_data['PaymentOptionId'] = $payment_option !== null ? intval($payment_option) : 1;
+
+        $idoklad_data['ItemsTextPrefix'] = $this->extract_field_value($raw_payload, array('ItemsTextPrefix', 'items_text_prefix')) ?: 'Invoice items:';
+        $idoklad_data['ItemsTextSuffix'] = $this->extract_field_value($raw_payload, array('ItemsTextSuffix', 'items_text_suffix')) ?: 'Thank you for your business.';
+        $idoklad_data['ReportLanguage'] = 1;
+        $idoklad_data['IsEet'] = false;
+        $idoklad_data['EetResponsibility'] = 0;
+
+        $vat_on_pay = $this->normalize_amount($this->extract_field_value($raw_payload, array('VatOnPayStatus', 'vat_on_pay_status')));
+        $idoklad_data['VatOnPayStatus'] = $vat_on_pay !== null ? intval($vat_on_pay) : 0;
+
+        $vat_regime = $this->normalize_amount($this->extract_field_value($raw_payload, array('VatRegime', 'vat_regime')));
+        $idoklad_data['VatRegime'] = $vat_regime !== null ? intval($vat_regime) : 0;
+        $idoklad_data['HasVatRegimeOss'] = false;
+
+        // Metadata for debugging and validation
+        if (!empty($response_metadata)) {
+            $idoklad_data['pdfco_metadata'] = $response_metadata;
         }
-        
-        // Ensure Items array exists
-        if (!isset($idoklad_data['Items']) || !is_array($idoklad_data['Items'])) {
-            $idoklad_data['Items'] = array();
-        }
-        
-        // Ensure Description exists (required by iDoklad)
-        if (empty($idoklad_data['Description'])) {
-            $supplier = $idoklad_data['PartnerName'] ?? 'Neznámý dodavatel';
-            $invoice_number = $idoklad_data['DocumentNumber'] ?? 'N/A';
-            $idoklad_data['Description'] = 'Faktura od ' . $supplier . ' č. ' . $invoice_number;
-        }
-        
-        // Add metadata
         $idoklad_data['ai_parsed'] = true;
         $idoklad_data['parser_source'] = 'pdf_co_ai_idoklad';
         $idoklad_data['parsed_at'] = date('Y-m-d H:i:s');
-        
+
+        if ($idoklad_data['total_amount'] === null && !empty($items)) {
+            $computed_total = 0;
+            foreach ($items as $item) {
+                $quantity = isset($item['Amount']) ? floatval($item['Amount']) : 0;
+                $unit_price = isset($item['UnitPrice']) ? floatval($item['UnitPrice']) : 0;
+                $computed_total += $quantity * $unit_price;
+            }
+            $idoklad_data['total_amount'] = round($computed_total, 2);
+            $idoklad_data['total'] = $idoklad_data['total_amount'];
+        }
+
         if (get_option('idoklad_debug_mode')) {
             error_log('PDF.co AI Parser: Prepared iDoklad data: ' . json_encode($idoklad_data, JSON_PRETTY_PRINT));
         }
-        
+
         return $idoklad_data;
     }
     
@@ -337,7 +435,211 @@ class IDokladProcessor_PDFCoAIParser {
         }
         return null;
     }
-    
+
+    /**
+     * Extract field value from mixed-case structures (case insensitive, snake/camel variants)
+     */
+    private function extract_field_value($data, $possible_fields) {
+        if (!is_array($data)) {
+            return null;
+        }
+
+        foreach ($possible_fields as $field) {
+            if (isset($data[$field]) && !$this->is_value_empty($data[$field])) {
+                return $data[$field];
+            }
+        }
+
+        $normalized_map = array();
+
+        foreach ($data as $key => $value) {
+            if ($this->is_value_empty($value)) {
+                continue;
+            }
+
+            $lower_key = strtolower($key);
+            $normalized_map[$lower_key] = $value;
+            $stripped_key = strtolower(preg_replace('/[\s_\-]/', '', $key));
+            $normalized_map[$stripped_key] = $value;
+        }
+
+        foreach ($possible_fields as $field) {
+            $lower = strtolower($field);
+            if (isset($normalized_map[$lower])) {
+                return $normalized_map[$lower];
+            }
+
+            $stripped = strtolower(preg_replace('/[\s_\-]/', '', $field));
+            if (isset($normalized_map[$stripped])) {
+                return $normalized_map[$stripped];
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Extract value from multiple possible source arrays
+     */
+    private function extract_from_sources($sources, $possible_fields) {
+        foreach ($sources as $source) {
+            $value = $this->extract_field_value($source, $possible_fields);
+            if (!$this->is_value_empty($value)) {
+                return $value;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Normalize amount string to float
+     */
+    private function normalize_amount($value) {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        if (is_numeric($value)) {
+            return floatval($value);
+        }
+
+        if (is_string($value)) {
+            $normalized = str_replace(array("\xC2\xA0", ' '), '', $value);
+            $normalized = str_replace(',', '.', $normalized);
+            $normalized = preg_replace('/[^0-9\.-]/', '', $normalized);
+            if (is_numeric($normalized)) {
+                return floatval($normalized);
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Normalize date to Y-m-d format
+     */
+    private function normalize_date($date_string) {
+        if (empty($date_string)) {
+            return null;
+        }
+
+        $formats = array(
+            'Y-m-d',
+            'd.m.Y',
+            'd/m/Y',
+            'm/d/Y',
+            'Y-m-d H:i:s',
+            'd.m.Y H:i:s'
+        );
+
+        foreach ($formats as $format) {
+            $date = DateTime::createFromFormat($format, $date_string);
+            if ($date !== false) {
+                return $date->format('Y-m-d');
+            }
+        }
+
+        $timestamp = strtotime($date_string);
+        if ($timestamp !== false) {
+            return date('Y-m-d', $timestamp);
+        }
+
+        return $date_string;
+    }
+
+    /**
+     * Convert parsed items into iDoklad item structures
+     */
+    private function extract_items_for_idoklad($data) {
+        $possible_keys = array('Items', 'items', 'LineItems', 'line_items', 'InvoiceItems', 'invoice_items', 'products');
+        $raw_items = array();
+
+        foreach ($possible_keys as $key) {
+            if (isset($data[$key]) && is_array($data[$key]) && !empty($data[$key])) {
+                $raw_items = $data[$key];
+                break;
+            }
+        }
+
+        $normalized_items = $this->normalize_items($raw_items);
+        $idoklad_items = array();
+
+        foreach ($normalized_items as $index => $item) {
+            $name = isset($item['name']) ? $item['name'] : 'Item ' . ($index + 1);
+            $quantity = $this->normalize_amount($item['quantity'] ?? 1);
+            if ($quantity === null || $quantity <= 0) {
+                $quantity = 1.0;
+            }
+
+            $unit_price = $this->normalize_amount($item['unit_price'] ?? $item['price'] ?? null);
+            if ($unit_price === null && isset($item['total']) && $quantity > 0) {
+                $line_total = $this->normalize_amount($item['total']);
+                if ($line_total !== null) {
+                    $unit_price = $line_total / $quantity;
+                }
+            }
+
+            $vat_rate = $this->normalize_amount($item['vat_rate'] ?? null);
+            if ($vat_rate === null) {
+                $vat_rate = 0.0;
+            }
+
+            $idoklad_items[] = array(
+                'Name' => $name,
+                'Unit' => $item['unit'] ?? 'pcs',
+                'Amount' => $quantity,
+                'UnitPrice' => $unit_price !== null ? $unit_price : 0.0,
+                'PriceType' => 1,
+                'VatRateType' => 2,
+                'VatRate' => $vat_rate,
+                'IsTaxMovement' => false,
+                'DiscountPercentage' => 0.0
+            );
+        }
+
+        return $idoklad_items;
+    }
+
+    /**
+     * Check if a value should be treated as empty
+     */
+    private function is_value_empty($value) {
+        if ($value === null) {
+            return true;
+        }
+
+        if (is_string($value)) {
+            return trim($value) === '';
+        }
+
+        if (is_array($value)) {
+            return empty($value);
+        }
+
+        return false;
+    }
+
+    /**
+     * Map currency code to iDoklad currency ID
+     */
+    private function get_currency_id($currency_code) {
+        $currency_map = array(
+            'CZK' => 1,
+            'EUR' => 2,
+            'USD' => 3,
+            'GBP' => 4
+        );
+
+        $upper = strtoupper((string) $currency_code);
+
+        if (isset($currency_map[$upper])) {
+            return $currency_map[$upper];
+        }
+
+        return 1;
+    }
+
     /**
      * Normalize items array
      */
