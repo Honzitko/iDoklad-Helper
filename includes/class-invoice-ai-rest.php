@@ -10,9 +10,15 @@ if (!defined('ABSPATH')) {
 class IDokladProcessor_InvoiceAIRest {
 
     private $model;
+    private $logger;
 
     public function __construct() {
         $this->model = get_option('idoklad_chatgpt_model', 'gpt-4.1-mini');
+
+        if (class_exists('IDokladProcessor_Logger')) {
+            $this->logger = IDokladProcessor_Logger::get_instance();
+        }
+
         add_action('rest_api_init', [$this, 'register_routes']);
     }
 
@@ -30,6 +36,12 @@ class IDokladProcessor_InvoiceAIRest {
                     'required' => false,
                     'type'     => 'string',
                 ],
+                'send_to_idoklad' => [
+                    'required'          => false,
+                    'type'              => 'boolean',
+                    'default'           => true,
+                    'sanitize_callback' => 'rest_sanitize_boolean',
+                ],
             ],
         ]);
     }
@@ -46,6 +58,18 @@ class IDokladProcessor_InvoiceAIRest {
                 'error' => 'Missing OpenAI API key configuration.',
             ], 500);
         }
+
+        $send_to_idoklad = $request->get_param('send_to_idoklad');
+        if (null === $send_to_idoklad) {
+            $send_to_idoklad = true;
+        }
+        $send_to_idoklad = rest_sanitize_boolean($send_to_idoklad);
+
+        $this->log('Invoice AI REST: Received parse request', [
+            'has_invoice_url'  => !empty($request->get_param('invoice_url')),
+            'has_invoice_text' => !empty($request->get_param('invoice_text')),
+            'send_to_idoklad'  => $send_to_idoklad,
+        ]);
 
         $invoice_url  = $request->get_param('invoice_url');
         $invoice_text = $request->get_param('invoice_text');
@@ -101,8 +125,97 @@ class IDokladProcessor_InvoiceAIRest {
             ], 500);
         }
 
+        $structured_data = $this->parse_openai_json($response);
+
+        if (is_wp_error($structured_data)) {
+            return new WP_REST_Response([
+                'error' => $structured_data->get_error_message(),
+                'raw_response' => $response,
+            ], 500);
+        }
+
+        $structured_data['source'] = 'chatgpt_rest';
+
+        $this->log('Invoice AI REST: Parsed OpenAI response', [
+            'keys' => array_keys($structured_data),
+        ]);
+
+        if (!class_exists('IDokladProcessor_PDFCoAIParserEnhanced')) {
+            return new WP_REST_Response([
+                'error' => 'iDoklad data transformer is unavailable.',
+            ], 500);
+        }
+
+        $parser = new IDokladProcessor_PDFCoAIParserEnhanced();
+        $transform_result = $parser->transform_structured_data($structured_data, 'rest_api_chatgpt');
+        $idoklad_data = $transform_result['data'];
+        $idoklad_validation = $transform_result['validation'];
+
+        $this->log('Invoice AI REST: Transformed data for iDoklad', [
+            'document_number' => $idoklad_data['DocumentNumber'] ?? '',
+            'items_count'     => isset($idoklad_data['Items']) ? count($idoklad_data['Items']) : 0,
+            'is_valid'        => $idoklad_validation['is_valid'] ?? false,
+        ]);
+
+        if (!$transform_result['success']) {
+            return new WP_REST_Response([
+                'error' => 'OpenAI payload failed iDoklad validation.',
+                'validation' => $idoklad_validation,
+                'parsed' => $structured_data,
+                'idoklad_payload' => $idoklad_data,
+            ], 422);
+        }
+
+        $idoklad_response = null;
+        if ($send_to_idoklad) {
+            if (!class_exists('IDokladProcessor_IDokladAPIV3Integration')) {
+                return new WP_REST_Response([
+                    'error' => 'iDoklad integration class not available.',
+                    'parsed' => $structured_data,
+                    'idoklad_payload' => $idoklad_data,
+                    'validation' => $idoklad_validation,
+                ], 500);
+            }
+
+            $client_id = get_option('idoklad_client_id');
+            $client_secret = get_option('idoklad_client_secret');
+
+            if (empty($client_id) || empty($client_secret)) {
+                return new WP_REST_Response([
+                    'error' => 'Missing iDoklad API credentials.',
+                    'parsed' => $structured_data,
+                    'idoklad_payload' => $idoklad_data,
+                    'validation' => $idoklad_validation,
+                ], 500);
+            }
+
+            try {
+                $idoklad_api = new IDokladProcessor_IDokladAPIV3Integration($client_id, $client_secret);
+                $idoklad_response = $idoklad_api->create_invoice_complete_workflow($idoklad_data);
+
+                $this->log('Invoice AI REST: Invoice created in iDoklad', [
+                    'document_number' => $idoklad_data['DocumentNumber'] ?? '',
+                ]);
+            } catch (Exception $e) {
+                $this->log('Invoice AI REST: Failed to create invoice in iDoklad', [
+                    'error' => $e->getMessage(),
+                ]);
+
+                return new WP_REST_Response([
+                    'error' => 'Failed to create invoice in iDoklad: ' . $e->getMessage(),
+                    'parsed' => $structured_data,
+                    'idoklad_payload' => $idoklad_data,
+                    'validation' => $idoklad_validation,
+                ], 500);
+            }
+        }
+
         return new WP_REST_Response([
-            'parsed' => $response,
+            'parsed' => $structured_data,
+            'idoklad_payload' => $idoklad_data,
+            'validation' => $idoklad_validation,
+            'idoklad_response' => $idoklad_response,
+            'created_in_idoklad' => $send_to_idoklad && !empty($idoklad_response),
         ], 200);
     }
 
@@ -304,5 +417,30 @@ class IDokladProcessor_InvoiceAIRest {
         }
 
         return '';
+    }
+
+    private function parse_openai_json($response_text) {
+        if (empty($response_text)) {
+            return new WP_Error('openai_invalid_response', 'OpenAI response was empty.');
+        }
+
+        $clean = trim($response_text);
+        $clean = preg_replace('/^```json\s*/', '', $clean);
+        $clean = preg_replace('/```$/', '', $clean);
+        $clean = trim($clean);
+
+        $data = json_decode($clean, true);
+
+        if (json_last_error() !== JSON_ERROR_NONE || !is_array($data)) {
+            return new WP_Error('openai_invalid_json', 'OpenAI response did not contain valid JSON: ' . json_last_error_msg());
+        }
+
+        return $data;
+    }
+
+    private function log($message, $context = array()) {
+        if ($this->logger) {
+            $this->logger->info($message, $context);
+        }
     }
 }
