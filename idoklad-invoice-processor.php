@@ -35,6 +35,7 @@ $required_files = array(
     'includes/class-email-monitor.php',
     'includes/class-pdf-processor.php',
     'includes/class-chatgpt-integration.php',
+    'includes/class-invoice-ai-rest.php',
     'includes/class-notification.php',
     'includes/class-logger.php',
     'includes/class-user-manager.php'
@@ -153,6 +154,16 @@ class IDokladInvoiceProcessor {
         
         if (class_exists('IDokladProcessor_UserManager')) {
             new IDokladProcessor_UserManager();
+        }
+
+        if (class_exists('IDokladProcessor_InvoiceAIRest')) {
+            try {
+                new IDokladProcessor_InvoiceAIRest();
+            } catch (Exception $e) {
+                error_log('iDoklad Plugin: Failed to initialize InvoiceAIRest: ' . $e->getMessage());
+            } catch (Error $e) {
+                error_log('iDoklad Plugin: Fatal error in InvoiceAIRest: ' . $e->getMessage());
+            }
         }
         
         // Initialize enhanced v3 components (only if classes exist and are safe to load)
