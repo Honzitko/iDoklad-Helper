@@ -485,14 +485,24 @@ class IDokladProcessor_PDFCoAIParserEnhanced {
                 if (!in_array('PartnerName', $validation['required_fields_present'], true)) {
                     $validation['required_fields_present'][] = 'PartnerName';
                 }
-                $validation['warnings'][] = 'PartnerId missing - the integration will attempt to resolve it via the iDoklad REST API.';
+                $warning_message = 'PartnerId missing - the integration will attempt to resolve it via the iDoklad REST API.';
+                if (!in_array($warning_message, $validation['warnings'], true)) {
+                    $validation['warnings'][] = $warning_message;
+                }
                 $validation['auto_fill_fields']['PartnerId'] = 'rest_lookup';
             } else {
                 if (!in_array('PartnerName', $validation['required_fields_missing'], true)) {
                     $validation['required_fields_missing'][] = 'PartnerName';
                 }
-                $validation['errors'][] = 'Missing partner identification (PartnerId or PartnerName).';
-                $validation['is_valid'] = false;
+
+                $default_partner_warning = 'Partner identification missing - default partner ID (22429105) will be used.';
+                if (!in_array($default_partner_warning, $validation['warnings'], true)) {
+                    $validation['warnings'][] = $default_partner_warning;
+                }
+
+                if (!isset($validation['auto_fill_fields']['PartnerId'])) {
+                    $validation['auto_fill_fields']['PartnerId'] = 'default_partner_id';
+                }
             }
         }
 

@@ -133,6 +133,11 @@ class IDokladProcessor_IDokladAPIV3Integration {
 
         $partner_data = $invoice_data['partner_data'];
 
+        if ($this->is_partner_data_empty($partner_data)) {
+            $this->logger->info('Partner data empty or missing details, using default partner ID: 22429105');
+            return 22429105;
+        }
+
         $existing_partner_id = $this->find_existing_partner($partner_data);
 
         if ($existing_partner_id) {
@@ -922,6 +927,41 @@ class IDokladProcessor_IDokladAPIV3Integration {
         }
 
         return null;
+    }
+
+    /**
+     * Determine if partner data contains any usable information
+     */
+    private function is_partner_data_empty($partner_data) {
+        if (empty($partner_data) || !is_array($partner_data)) {
+            return true;
+        }
+
+        foreach ($partner_data as $value) {
+            if (is_array($value)) {
+                if (!$this->is_partner_data_empty($value)) {
+                    return false;
+                }
+                continue;
+            }
+
+            if (is_string($value)) {
+                if (trim($value) !== '') {
+                    return false;
+                }
+                continue;
+            }
+
+            if (is_numeric($value) && intval($value) > 0) {
+                return false;
+            }
+
+            if (!empty($value)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**
