@@ -198,6 +198,8 @@ class IDokladProcessor_Admin {
         register_setting('idoklad_chatgpt_settings', 'idoklad_chatgpt_api_key');
         register_setting('idoklad_chatgpt_settings', 'idoklad_chatgpt_model');
         register_setting('idoklad_chatgpt_settings', 'idoklad_chatgpt_prompt');
+        register_setting('idoklad_chatgpt_settings', 'idoklad_openai_prompt_id');
+        register_setting('idoklad_chatgpt_settings', 'idoklad_openai_prompt_version');
 
         // PDF processing settings (FALLBACK)
         register_setting('idoklad_pdf_settings', 'idoklad_use_native_parser_first');
@@ -407,6 +409,14 @@ class IDokladProcessor_Admin {
 
         if (isset($_POST['chatgpt_prompt'])) {
             update_option('idoklad_chatgpt_prompt', sanitize_textarea_field($_POST['chatgpt_prompt']));
+        }
+
+        if (isset($_POST['chatgpt_prompt_id'])) {
+            update_option('idoklad_openai_prompt_id', sanitize_text_field($_POST['chatgpt_prompt_id']));
+        }
+
+        if (isset($_POST['chatgpt_prompt_version'])) {
+            update_option('idoklad_openai_prompt_version', sanitize_text_field($_POST['chatgpt_prompt_version']));
         }
         
         // Save email settings

@@ -182,6 +182,34 @@ if (class_exists('IDokladProcessor_ChatGPTIntegration')) {
                                 <p class="description"><?php _e('Customize the prompt sent to ChatGPT. Keep the instructions concise and request JSON output.', 'idoklad-invoice-processor'); ?></p>
                             </td>
                         </tr>
+                        <tr>
+                            <th scope="row">
+                                <label for="chatgpt_prompt_id"><?php _e('OpenAI Prompt ID', 'idoklad-invoice-processor'); ?></label>
+                            </th>
+                            <td>
+                                <input type="text"
+                                       id="chatgpt_prompt_id"
+                                       name="chatgpt_prompt_id"
+                                       value="<?php echo esc_attr(get_option('idoklad_openai_prompt_id', '')); ?>"
+                                       class="regular-text"
+                                       placeholder="pmpt_..." />
+                                <p class="description"><?php _e('Optional Prompt API identifier (pmpt_...) to reuse a hosted OpenAI prompt when parsing invoices.', 'idoklad-invoice-processor'); ?></p>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th scope="row">
+                                <label for="chatgpt_prompt_version"><?php _e('OpenAI Prompt Version', 'idoklad-invoice-processor'); ?></label>
+                            </th>
+                            <td>
+                                <input type="text"
+                                       id="chatgpt_prompt_version"
+                                       name="chatgpt_prompt_version"
+                                       value="<?php echo esc_attr(get_option('idoklad_openai_prompt_version', '')); ?>"
+                                       class="regular-text"
+                                       placeholder="1" />
+                                <p class="description"><?php _e('Optional version number for the stored prompt (leave empty to use the latest).', 'idoklad-invoice-processor'); ?></p>
+                            </td>
+                        </tr>
                     </table>
                 </div>
                 
