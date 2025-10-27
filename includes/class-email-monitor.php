@@ -470,8 +470,8 @@ class IDokladProcessor_EmailMonitor {
         IDokladProcessor_Database::add_queue_step($email->id, 'Initializing processors');
         
         $pdf_processor = new IDokladProcessor_PDFProcessor();
-        // TODO: iDoklad API integration removed - to be rebuilt
-        // $idoklad_api = new IDokladProcessor_IDokladAPI($authorized_user);
+        IDokladProcessor_Database::add_queue_step($email->id, 'Resolving iDoklad API credentials');
+        $idoklad_api = $this->initialize_idoklad_api_client($authorized_user, $email->id);
         $notification = new IDokladProcessor_Notification();
         
         // Step 4: Process PDF with AI Parser (preferred) or fallback to text extraction
@@ -714,7 +714,7 @@ class IDokladProcessor_EmailMonitor {
         ));
         
         // Use transformed iDoklad data (already in correct API format)
-        $idoklad_response = $idoklad_api->create_invoice($idoklad_data);
+        $idoklad_response = $idoklad_api->create_invoice_complete_workflow($idoklad_data);
         
         if (!$idoklad_response) {
             IDokladProcessor_Database::add_queue_step($email->id, 'ERROR: Failed to create invoice in iDoklad');
@@ -766,7 +766,7 @@ class IDokladProcessor_EmailMonitor {
         if ($error_message) {
             $update_data['error_message'] = $error_message;
         }
-        
+
         $wpdb->update(
             $table,
             $update_data,
@@ -774,6 +774,45 @@ class IDokladProcessor_EmailMonitor {
             array('%s', '%s', '%s', '%s', '%s'),
             array('%s', '%s')
         );
+    }
+
+    /**
+     * Initialize the iDoklad API v3 client using user or global credentials
+     */
+    private function initialize_idoklad_api_client($authorized_user, $queue_id) {
+        $client_id = '';
+        $client_secret = '';
+        $credential_source = 'global';
+
+        if ($authorized_user) {
+            if (!empty($authorized_user->idoklad_client_id) && !empty($authorized_user->idoklad_client_secret)) {
+                $client_id = $authorized_user->idoklad_client_id;
+                $client_secret = $authorized_user->idoklad_client_secret;
+                $credential_source = 'user';
+            }
+        }
+
+        if (empty($client_id) || empty($client_secret)) {
+            $client_id = get_option('idoklad_client_id');
+            $client_secret = get_option('idoklad_client_secret');
+        }
+
+        if (empty($client_id) || empty($client_secret)) {
+            IDokladProcessor_Database::add_queue_step($queue_id, 'ERROR: Missing iDoklad API credentials', array(
+                'email' => $authorized_user ? $authorized_user->email : null
+            ));
+            throw new Exception('iDoklad API credentials are not configured');
+        }
+
+        if (!class_exists('IDokladProcessor_IDokladAPIV3Integration')) {
+            require_once IDOKLAD_PROCESSOR_PLUGIN_DIR . 'includes/class-idoklad-api-v3-integration.php';
+        }
+
+        IDokladProcessor_Database::add_queue_step($queue_id, 'iDoklad API credentials resolved', array(
+            'source' => $credential_source
+        ), false);
+
+        return new IDokladProcessor_IDokladAPIV3Integration($client_id, $client_secret);
     }
     
     /**
