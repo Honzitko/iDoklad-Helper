@@ -1015,19 +1015,19 @@ class IDokladProcessor_EmailMonitor {
         
         // Check required iDoklad fields
         if (empty($data['DocumentNumber'])) {
-            $errors[] = 'Missing DocumentNumber';
+            $warnings[] = 'Missing DocumentNumber - sequential numbering will be applied.';
         }
-        
+
         if (empty($data['Description'])) {
             $errors[] = 'Missing Description';
         }
-        
+
         if (empty($data['DateOfReceiving'])) {
-            $errors[] = 'Missing DateOfReceiving';
+            $warnings[] = 'Missing DateOfReceiving - email received timestamp will be used.';
         }
-        
+
         if (empty($data['Items']) || !is_array($data['Items']) || count($data['Items']) === 0) {
-            $errors[] = 'Missing or empty Items array';
+            $warnings[] = 'Missing or empty Items array - default service item will be injected.';
         }
         
         // Check currency
