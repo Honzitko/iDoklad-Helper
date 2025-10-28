@@ -184,6 +184,9 @@ class IDokladProcessor_InvoiceAIRest {
             ], 422);
         }
 
+        $partner_resolution = $this->resolve_partner_for_preview($idoklad_data, $idoklad_validation);
+        $analysis = $this->build_parse_analysis($structured_data, $idoklad_data, $idoklad_validation, $partner_resolution);
+
         $idoklad_response = null;
         if ($send_to_idoklad) {
             if (!class_exists('IDokladProcessor_IDokladAPIV3Integration')) {
@@ -234,6 +237,8 @@ class IDokladProcessor_InvoiceAIRest {
             'validation' => $idoklad_validation,
             'idoklad_response' => $idoklad_response,
             'created_in_idoklad' => $send_to_idoklad && !empty($idoklad_response),
+            'partner_resolution' => $partner_resolution,
+            'analysis' => $analysis,
             'openai_prompt_id' => $use_hosted_prompt ? $prompt_id : null,
             'openai_prompt_version' => $use_hosted_prompt ? $prompt_version : null,
         ], 200);
@@ -493,6 +498,618 @@ class IDokladProcessor_InvoiceAIRest {
         }
 
         return '';
+    }
+
+    private function resolve_partner_for_preview(&$idoklad_data, &$idoklad_validation) {
+        $result = array(
+            'partner_id' => null,
+            'source' => null,
+            'attempted' => false,
+            'warnings' => array(),
+        );
+
+        if (!empty($idoklad_data['PartnerId'])) {
+            $result['partner_id'] = intval($idoklad_data['PartnerId']);
+            $result['source'] = 'payload';
+            $idoklad_data['PartnerId'] = $result['partner_id'];
+            return $result;
+        }
+
+        if (!isset($idoklad_data['partner_data']) || !is_array($idoklad_data['partner_data']) || empty($idoklad_data['partner_data'])) {
+            $result['warnings'][] = 'Partner data unavailable - partner lookup skipped.';
+            return $result;
+        }
+
+        $client_id = get_option('idoklad_client_id');
+        $client_secret = get_option('idoklad_client_secret');
+
+        if (empty($client_id) || empty($client_secret)) {
+            $result['warnings'][] = 'iDoklad API credentials missing - partner lookup skipped.';
+            return $result;
+        }
+
+        try {
+            $integration = new IDokladProcessor_IDokladAPIV3Integration($client_id, $client_secret);
+        } catch (Exception $e) {
+            $error_message = $e->getMessage();
+            $result['warnings'][] = 'Failed to initialise iDoklad integration for partner lookup: ' . $error_message;
+            $result['error'] = $error_message;
+            return $result;
+        }
+
+        $resolution = $integration->resolve_partner_id_for_preview($idoklad_data);
+
+        if (isset($resolution['attempted'])) {
+            $result['attempted'] = (bool) $resolution['attempted'];
+        }
+
+        if (isset($resolution['source'])) {
+            $result['source'] = $resolution['source'];
+        }
+
+        if (!empty($resolution['warnings']) && is_array($resolution['warnings'])) {
+            $result['warnings'] = array_merge($result['warnings'], $resolution['warnings']);
+        }
+
+        if (isset($resolution['error'])) {
+            $result['error'] = $resolution['error'];
+        }
+
+        if (!empty($resolution['partner_id'])) {
+            $result['partner_id'] = intval($resolution['partner_id']);
+            $idoklad_data['PartnerId'] = $result['partner_id'];
+        }
+
+        if (!isset($idoklad_validation['warnings']) || !is_array($idoklad_validation['warnings'])) {
+            $idoklad_validation['warnings'] = array();
+        }
+
+        if (!empty($result['partner_id'])) {
+            $warning_message = ($result['source'] === 'rest_lookup')
+                ? 'PartnerId resolved via REST lookup: ' . $result['partner_id']
+                : 'PartnerId provided in payload: ' . $result['partner_id'];
+
+            if (!in_array($warning_message, $idoklad_validation['warnings'], true)) {
+                $idoklad_validation['warnings'][] = $warning_message;
+            }
+        } elseif ($result['attempted']) {
+            $warning_message = 'Partner lookup attempted but no matching contact was found.';
+
+            if (!in_array($warning_message, $idoklad_validation['warnings'], true)) {
+                $idoklad_validation['warnings'][] = $warning_message;
+            }
+        }
+
+        $this->log('Invoice AI REST: Partner resolution result', array(
+            'partner_id' => $result['partner_id'],
+            'source' => $result['source'],
+            'attempted' => $result['attempted'],
+            'warnings' => $result['warnings'],
+            'error' => $result['error'] ?? null,
+        ));
+
+        $result['warnings'] = $this->normalize_unique_strings($result['warnings']);
+
+        return $result;
+    }
+
+    private function build_parse_analysis($structured_data, $idoklad_data, $validation, $partner_resolution) {
+        $currency_code = $this->determine_currency_code($structured_data, $idoklad_data);
+        $currency_id = isset($idoklad_data['CurrencyId']) ? intval($idoklad_data['CurrencyId']) : null;
+        $prices = $this->build_price_summary($structured_data, $idoklad_data);
+        $items = $this->format_items_for_analysis($idoklad_data);
+        $notes = $this->collect_notes($structured_data, $idoklad_data);
+
+        $warnings = array();
+
+        if (!empty($validation['warnings']) && is_array($validation['warnings'])) {
+            $warnings = array_merge($warnings, $validation['warnings']);
+        }
+
+        if (!empty($partner_resolution['warnings']) && is_array($partner_resolution['warnings'])) {
+            $warnings = array_merge($warnings, $partner_resolution['warnings']);
+        }
+
+        $date_of_issue = $idoklad_data['DateOfIssue'] ?? null;
+        $date_of_taxing = $idoklad_data['DateOfTaxing'] ?? null;
+        $date_of_maturity = $idoklad_data['DateOfMaturity'] ?? null;
+        $taxing_assumed = false;
+
+        if (empty($date_of_taxing) && !empty($date_of_issue)) {
+            $date_of_taxing = $date_of_issue;
+            $taxing_assumed = true;
+            $warnings[] = 'DateOfTaxing missing - assumed equal to DateOfIssue for preview output.';
+        } elseif (empty($date_of_taxing)) {
+            $warnings[] = 'DateOfTaxing missing - provide a value before export.';
+        }
+
+        if (!empty($partner_resolution['partner_id']) && ($partner_resolution['source'] ?? '') === 'rest_lookup') {
+            $warnings[] = 'PartnerId resolved via REST lookup: ' . intval($partner_resolution['partner_id']) . '.';
+        }
+
+        $warnings = $this->normalize_unique_strings($warnings);
+
+        $checklist = $this->build_checklist(
+            $idoklad_data,
+            $currency_code,
+            $currency_id,
+            $prices,
+            count($items),
+            $partner_resolution,
+            $date_of_issue,
+            $date_of_taxing,
+            $date_of_maturity,
+            $taxing_assumed
+        );
+
+        $partner_details = $this->build_partner_details($structured_data, $idoklad_data);
+
+        $invoice = array(
+            'DocumentNumber' => $idoklad_data['DocumentNumber'] ?? null,
+            'DateOfIssue' => $date_of_issue,
+            'DateOfTaxing' => $date_of_taxing,
+            'DateOfMaturity' => $date_of_maturity,
+            'VariableSymbol' => $idoklad_data['VariableSymbol'] ?? null,
+            'OrderNumber' => $this->fetch_from_sources(
+                array(
+                    $structured_data,
+                    $structured_data['Invoice'] ?? array(),
+                ),
+                array('OrderNumber', 'order_number', 'OrderNo')
+            ) ?? ($idoklad_data['OrderNumber'] ?? null),
+            'CurrencyCode' => $currency_code,
+            'CurrencyId' => $currency_id,
+            'ExchangeRate' => $this->safe_float($idoklad_data['ExchangeRate'] ?? null, 4),
+            'ExchangeRateAmount' => $this->safe_float($idoklad_data['ExchangeRateAmount'] ?? null, 4),
+            'PartnerId' => isset($idoklad_data['PartnerId']) && $idoklad_data['PartnerId'] !== null ? intval($idoklad_data['PartnerId']) : null,
+            'Partner' => $partner_details,
+            'Prices' => $prices,
+            'Items' => $items,
+            'Notes' => $notes,
+            'Warnings' => $warnings,
+        );
+
+        return array(
+            'Checklist' => $checklist,
+            'Invoice' => $invoice,
+        );
+    }
+
+    private function build_checklist($idoklad_data, $currency_code, $currency_id, $prices, $item_count, $partner_resolution, $date_of_issue, $date_of_taxing, $date_of_maturity, $taxing_assumed) {
+        $checklist = array();
+        $checklist[] = 'Parse invoice to identify mandatory fields: dates, supplier, customer, totals, items.';
+
+        if (!empty($idoklad_data['DocumentNumber'])) {
+            $checklist[] = "Set DocumentNumber -> '" . $idoklad_data['DocumentNumber'] . "'.";
+        } else {
+            $checklist[] = 'DocumentNumber missing – numeric sequence will assign a value during export.';
+        }
+
+        $date_segments = array();
+
+        if (!empty($date_of_issue)) {
+            $date_segments[] = 'DateOfIssue = ' . $date_of_issue;
+        }
+
+        if (!empty($date_of_maturity)) {
+            $date_segments[] = 'DateOfMaturity = ' . $date_of_maturity;
+        }
+
+        if (!empty($date_of_taxing)) {
+            $segment = 'DateOfTaxing = ' . $date_of_taxing;
+            if ($taxing_assumed) {
+                $segment .= ' (assumed)';
+            }
+            $date_segments[] = $segment;
+        }
+
+        if (!empty($date_segments)) {
+            $checklist[] = 'Dates validated: ' . implode('; ', $date_segments) . '.';
+        }
+
+        if ($currency_code || $currency_id) {
+            $currency_message = 'Currency ' . ($currency_code ?: 'N/A');
+
+            if ($currency_id) {
+                $currency_message .= ' (Id ' . $currency_id . ')';
+            }
+
+            $exchange_rate = $this->safe_float($idoklad_data['ExchangeRate'] ?? null, 4);
+
+            if ($exchange_rate !== null && abs($exchange_rate - 1.0) > 0.0001) {
+                $currency_message .= ' with exchange rate ' . $this->format_decimal($exchange_rate, 4);
+            } else {
+                $currency_message .= ' detected';
+            }
+
+            $checklist[] = $currency_message . '.';
+        }
+
+        if ($prices['TotalWithoutVat'] !== null || $prices['TotalVat'] !== null || $prices['TotalWithVat'] !== null) {
+            $totals = array();
+
+            if ($prices['TotalWithoutVat'] !== null) {
+                $totals[] = 'without VAT ' . $this->format_decimal($prices['TotalWithoutVat']);
+            }
+
+            if ($prices['TotalVat'] !== null) {
+                $totals[] = 'VAT ' . $this->format_decimal($prices['TotalVat']);
+            }
+
+            if ($prices['TotalWithVat'] !== null) {
+                $totals[] = 'with VAT ' . $this->format_decimal($prices['TotalWithVat']);
+            }
+
+            $checklist[] = 'Totals reconciled: ' . implode(', ', $totals) . '.';
+        } else {
+            $checklist[] = 'Totals not supplied – confirm invoice amounts before export.';
+        }
+
+        if ($item_count > 0) {
+            $checklist[] = sprintf('Prepared %d invoice item(s) for the iDoklad payload.', $item_count);
+        } else {
+            $checklist[] = 'No invoice items detected – add at least one item manually.';
+        }
+
+        if (!empty($partner_resolution['partner_id'])) {
+            if (($partner_resolution['source'] ?? '') === 'rest_lookup') {
+                $checklist[] = 'PartnerId resolved via REST lookup (ID ' . intval($partner_resolution['partner_id']) . ').';
+            } else {
+                $checklist[] = 'PartnerId provided directly in parsed data (ID ' . intval($partner_resolution['partner_id']) . ').';
+            }
+        } elseif (!empty($idoklad_data['PartnerName'])) {
+            if (!empty($partner_resolution['attempted'])) {
+                $checklist[] = 'Partner lookup attempted but requires manual confirmation before export.';
+            } else {
+                $checklist[] = 'PartnerId pending – REST lookup will resolve the contact before export.';
+            }
+        } else {
+            $checklist[] = 'Partner identification missing – default partner or manual entry required.';
+        }
+
+        return $checklist;
+    }
+
+    private function build_partner_details($structured_data, $idoklad_data) {
+        $sources = $this->get_partner_sources($structured_data);
+
+        $partner_name = $idoklad_data['PartnerName'] ?? null;
+        if (empty($partner_name)) {
+            $partner_name = $this->fetch_from_sources($sources, array('PartnerName', 'partner_name', 'SupplierName', 'supplier_name', 'CustomerName', 'customer_name', 'CompanyName', 'company_name'));
+        }
+
+        $identification = $idoklad_data['PartnerIdentificationNumber'] ?? null;
+        if (empty($identification)) {
+            $identification = $this->fetch_from_sources($sources, array('IdentificationNumber', 'identification_number', 'VatNumber', 'vat_number', 'ICO', 'ico'));
+        }
+
+        $vat_number = $this->fetch_from_sources($sources, array('VatIdentificationNumber', 'vat_identification_number', 'VatNumber', 'vat_number', 'SupplierVatNumber', 'supplier_vat_number'));
+        if (empty($vat_number) && !empty($idoklad_data['partner_data']['vat'] ?? null)) {
+            $vat_number = $idoklad_data['partner_data']['vat'];
+        }
+
+        $address_full = $this->build_partner_address($sources, $idoklad_data);
+
+        return array(
+            'PartnerName' => $partner_name ?: null,
+            'IdentificationNumber' => $identification ?: null,
+            'VatIdentificationNumber' => $vat_number ?: null,
+            'AddressFull' => $address_full,
+        );
+    }
+
+    private function build_partner_address($sources, $idoklad_data) {
+        $parts = array();
+
+        if (!empty($idoklad_data['PartnerAddress'])) {
+            $parts[] = $idoklad_data['PartnerAddress'];
+        }
+
+        if (isset($idoklad_data['partner_data']) && is_array($idoklad_data['partner_data'])) {
+            $partner_data = $idoklad_data['partner_data'];
+
+            if (!empty($partner_data['address'])) {
+                $parts[] = $partner_data['address'];
+            }
+
+            $city_line = trim(((string) ($partner_data['postal_code'] ?? '')) . ' ' . ((string) ($partner_data['city'] ?? '')));
+            if ($city_line !== '') {
+                $parts[] = $city_line;
+            }
+        }
+
+        $country = $this->fetch_from_sources($sources, array('Country', 'country', 'PartnerCountry', 'partner_country', 'SupplierCountry', 'supplier_country'));
+        if (empty($country) && isset($idoklad_data['partner_data']['country'])) {
+            $country = $idoklad_data['partner_data']['country'];
+        }
+
+        if (!empty($country)) {
+            $parts[] = $country;
+        }
+
+        $parts = $this->normalize_unique_strings($parts);
+
+        return !empty($parts) ? implode(', ', $parts) : null;
+    }
+
+    private function build_price_summary($structured_data, $idoklad_data) {
+        $total_without_vat = $this->safe_float($this->fetch_price_value($structured_data, array('TotalWithoutVat', 'total_without_vat', 'NetTotal', 'net_total', 'NetAmount', 'net_amount')));
+        $total_vat = $this->safe_float($this->fetch_price_value($structured_data, array('TotalVat', 'total_vat', 'VatAmount', 'vat_amount', 'TaxAmount', 'tax_amount')));
+        $total_with_vat = $this->safe_float($this->fetch_price_value($structured_data, array('TotalWithVat', 'total_with_vat', 'TotalAmount', 'total_amount', 'GrandTotal', 'grand_total')));
+
+        if ($total_with_vat === null && $total_without_vat !== null && $total_vat !== null) {
+            $total_with_vat = round($total_without_vat + $total_vat, 2);
+        }
+
+        if ($total_without_vat === null && isset($idoklad_data['Items']) && is_array($idoklad_data['Items'])) {
+            $items_sum = 0.0;
+            $has_amount = false;
+
+            foreach ($idoklad_data['Items'] as $item) {
+                if (!is_array($item)) {
+                    continue;
+                }
+
+                $quantity = $this->safe_float($item['Amount'] ?? null);
+                $unit_price = $this->safe_float($item['UnitPrice'] ?? null);
+
+                if ($quantity !== null && $unit_price !== null) {
+                    $items_sum += $quantity * $unit_price;
+                    $has_amount = true;
+                }
+            }
+
+            if ($has_amount) {
+                $total_without_vat = round($items_sum, 2);
+            }
+        }
+
+        if ($total_vat === null && $total_with_vat !== null && $total_without_vat !== null) {
+            $total_vat = round($total_with_vat - $total_without_vat, 2);
+        }
+
+        return array(
+            'TotalWithoutVat' => $total_without_vat,
+            'TotalVat' => $total_vat,
+            'TotalWithVat' => $total_with_vat,
+        );
+    }
+
+    private function format_items_for_analysis($idoklad_data) {
+        if (!isset($idoklad_data['Items']) || !is_array($idoklad_data['Items'])) {
+            return array();
+        }
+
+        $items = array();
+
+        foreach ($idoklad_data['Items'] as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+
+            $quantity = $this->safe_float($item['Amount'] ?? null);
+            $discount = $this->safe_float($item['DiscountPercentage'] ?? 0);
+
+            $items[] = array(
+                'Name' => $item['Name'] ?? '',
+                'Description' => isset($item['Description']) ? $item['Description'] : null,
+                'Quantity' => $quantity !== null ? $quantity : 1.0,
+                'Unit' => $item['Unit'] ?? null,
+                'UnitPrice' => $this->safe_float($item['UnitPrice'] ?? null),
+                'PriceType' => isset($item['PriceType']) ? intval($item['PriceType']) : null,
+                'VatRateType' => isset($item['VatRateType']) ? intval($item['VatRateType']) : null,
+                'VatRate' => $this->safe_float($item['VatRate'] ?? null),
+                'IsTaxMovement' => isset($item['IsTaxMovement']) ? (bool) $item['IsTaxMovement'] : false,
+                'DiscountPercentage' => $discount !== null ? $discount : 0.0,
+            );
+        }
+
+        return $items;
+    }
+
+    private function collect_notes($structured_data, $idoklad_data) {
+        $notes = array();
+
+        if (!empty($idoklad_data['Notes']) && is_array($idoklad_data['Notes'])) {
+            $notes = array_merge($notes, $idoklad_data['Notes']);
+        }
+
+        if (!empty($idoklad_data['Note']) && is_string($idoklad_data['Note'])) {
+            $notes[] = $idoklad_data['Note'];
+        }
+
+        $structured_notes = $this->fetch_from_sources(
+            array(
+                $structured_data,
+                $structured_data['Invoice'] ?? array(),
+            ),
+            array('Notes', 'notes')
+        );
+
+        if (is_array($structured_notes)) {
+            $notes = array_merge($notes, $structured_notes);
+        } elseif (is_string($structured_notes)) {
+            $notes[] = $structured_notes;
+        }
+
+        return $this->normalize_unique_strings($notes);
+    }
+
+    private function determine_currency_code($structured_data, $idoklad_data) {
+        $sources = array($structured_data);
+
+        if (isset($structured_data['Prices']) && is_array($structured_data['Prices'])) {
+            $sources[] = $structured_data['Prices'];
+        }
+
+        $currency = $this->fetch_from_sources($sources, array('CurrencyCode', 'currency_code', 'Currency', 'currency'));
+
+        if (is_array($currency)) {
+            $currency = reset($currency);
+        }
+
+        if (is_string($currency) && $currency !== '') {
+            return strtoupper(trim($currency));
+        }
+
+        if (!empty($idoklad_data['CurrencyCode'])) {
+            return strtoupper(trim((string) $idoklad_data['CurrencyCode']));
+        }
+
+        if (isset($idoklad_data['CurrencyId'])) {
+            $map = array(
+                1 => 'CZK',
+                2 => 'EUR',
+                3 => 'USD',
+                4 => 'GBP',
+            );
+
+            $currency_id = intval($idoklad_data['CurrencyId']);
+            if (isset($map[$currency_id])) {
+                return $map[$currency_id];
+            }
+        }
+
+        return null;
+    }
+
+    private function get_partner_sources($structured_data) {
+        $sources = array();
+
+        if (is_array($structured_data)) {
+            $sources[] = $structured_data;
+
+            if (isset($structured_data['Partner']) && is_array($structured_data['Partner'])) {
+                $sources[] = $structured_data['Partner'];
+            }
+
+            if (isset($structured_data['partner']) && is_array($structured_data['partner'])) {
+                $sources[] = $structured_data['partner'];
+            }
+        }
+
+        return $sources;
+    }
+
+    private function fetch_from_sources($sources, $keys) {
+        foreach ($sources as $source) {
+            if (!is_array($source) || empty($source)) {
+                continue;
+            }
+
+            $value = $this->fetch_value($source, $keys);
+
+            if ($value !== null && $value !== '') {
+                return $value;
+            }
+        }
+
+        return null;
+    }
+
+    private function fetch_price_value($structured_data, $keys) {
+        $sources = array();
+
+        if (is_array($structured_data)) {
+            $sources[] = $structured_data;
+
+            if (isset($structured_data['Prices']) && is_array($structured_data['Prices'])) {
+                $sources[] = $structured_data['Prices'];
+            }
+        }
+
+        return $this->fetch_from_sources($sources, $keys);
+    }
+
+    private function fetch_value($data, $possible_keys) {
+        if (!is_array($data)) {
+            return null;
+        }
+
+        foreach ($possible_keys as $key) {
+            if (array_key_exists($key, $data) && $data[$key] !== null && $data[$key] !== '') {
+                return $data[$key];
+            }
+        }
+
+        $normalized = array();
+
+        foreach ($data as $key => $value) {
+            if ($value === null || $value === '') {
+                continue;
+            }
+
+            $key_string = strtolower((string) $key);
+            $normalized[$key_string] = $value;
+            $normalized[preg_replace('/[\s_\-]/', '', $key_string)] = $value;
+        }
+
+        foreach ($possible_keys as $key) {
+            $lower = strtolower((string) $key);
+
+            if (isset($normalized[$lower])) {
+                return $normalized[$lower];
+            }
+
+            $stripped = preg_replace('/[\s_\-]/', '', $lower);
+            if (isset($normalized[$stripped])) {
+                return $normalized[$stripped];
+            }
+        }
+
+        return null;
+    }
+
+    private function safe_float($value, $decimals = 2) {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        if (is_string($value)) {
+            $value = str_replace(array(' ', ','), array('', '.'), $value);
+        }
+
+        if (!is_numeric($value)) {
+            return null;
+        }
+
+        $float_value = (float) $value;
+
+        if ($decimals === null) {
+            return $float_value;
+        }
+
+        return round($float_value, $decimals);
+    }
+
+    private function format_decimal($value, $decimals = 2) {
+        if ($value === null) {
+            return null;
+        }
+
+        return number_format((float) $value, $decimals, '.', '');
+    }
+
+    private function normalize_unique_strings($values) {
+        $normalized = array();
+
+        foreach ((array) $values as $value) {
+            if (is_array($value) || is_object($value)) {
+                continue;
+            }
+
+            $string = trim((string) $value);
+
+            if ($string === '') {
+                continue;
+            }
+
+            if (!in_array($string, $normalized, true)) {
+                $normalized[] = $string;
+            }
+        }
+
+        return $normalized;
     }
 
     private function parse_openai_json($response_text) {
