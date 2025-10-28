@@ -117,13 +117,13 @@ class IDokladProcessor_IDokladAPIV3Integration {
      */
     private function create_partner_if_needed($invoice_data) {
         $this->logger->info('Step 2: (Optional) Creating partner');
-        
+
         // If no partner data provided, use default partner ID
         if (empty($invoice_data) || !isset($invoice_data['partner_data'])) {
             $this->logger->info('No partner data provided, using default partner ID: 22429105');
             return 22429105;
         }
-        
+
         $direct_partner_id = $this->extract_direct_partner_id($invoice_data);
 
         if ($direct_partner_id) {
@@ -228,7 +228,69 @@ class IDokladProcessor_IDokladAPIV3Integration {
             return 22429105;
         }
     }
-    
+
+    /**
+     * Resolve partner ID without creating a new partner. Used for preview flows.
+     *
+     * @param array $invoice_data Invoice payload prepared for iDoklad.
+     * @return array{
+     *     partner_id: int|null,
+     *     source: string|null,
+     *     attempted: bool,
+     *     warnings: array<int, string>,
+     *     error?: string
+     * }
+     */
+    public function resolve_partner_id_for_preview($invoice_data) {
+        $result = array(
+            'partner_id' => null,
+            'source' => null,
+            'attempted' => false,
+            'warnings' => array(),
+        );
+
+        $direct_partner_id = $this->extract_direct_partner_id($invoice_data);
+
+        if ($direct_partner_id) {
+            $result['partner_id'] = $direct_partner_id;
+            $result['source'] = 'payload';
+            return $result;
+        }
+
+        if (empty($invoice_data) || !isset($invoice_data['partner_data']) || $this->is_partner_data_empty($invoice_data['partner_data'])) {
+            $result['warnings'][] = 'Partner data missing - unable to perform REST lookup.';
+            return $result;
+        }
+
+        try {
+            $this->authenticate();
+        } catch (Exception $e) {
+            $error_message = $e->getMessage();
+            $result['warnings'][] = 'Authentication failed for partner lookup: ' . $error_message;
+            $result['error'] = $error_message;
+            return $result;
+        }
+
+        $result['attempted'] = true;
+
+        try {
+            $existing_partner_id = $this->find_existing_partner($invoice_data['partner_data']);
+
+            if ($existing_partner_id) {
+                $result['partner_id'] = $existing_partner_id;
+                $result['source'] = 'rest_lookup';
+            } else {
+                $result['warnings'][] = 'REST lookup did not return a matching partner.';
+            }
+        } catch (Exception $e) {
+            $error_message = $e->getMessage();
+            $result['warnings'][] = 'Partner lookup error: ' . $error_message;
+            $result['error'] = $error_message;
+        }
+
+        return $result;
+    }
+
     
     /**
      * Step 3: Resolve NumericSequence for issued invoices
