@@ -17,6 +17,8 @@ if (class_exists('IDokladProcessor_ChatGPTIntegration')) {
 <div class="wrap">
     <h1><?php _e('iDoklad Invoice Processor Settings', 'idoklad-invoice-processor'); ?></h1>
 
+    <?php settings_errors('idoklad_settings'); ?>
+
     <form method="post" action="">
         <?php wp_nonce_field('idoklad_settings_nonce'); ?>
 

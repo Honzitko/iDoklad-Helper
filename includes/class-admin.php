@@ -284,10 +284,26 @@ class IDokladProcessor_Admin {
      * Main admin page
      */
     public function admin_page() {
-        if (isset($_POST['submit'])) {
-            $this->save_settings();
+        if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+            $result = $this->save_settings();
+
+            if (is_wp_error($result)) {
+                add_settings_error(
+                    'idoklad_settings',
+                    $result->get_error_code(),
+                    $result->get_error_message(),
+                    'error'
+                );
+            } else {
+                add_settings_error(
+                    'idoklad_settings',
+                    'idoklad_settings_saved',
+                    __('Settings saved successfully!', 'idoklad-invoice-processor'),
+                    'updated'
+                );
+            }
         }
-        
+
         include IDOKLAD_PROCESSOR_PLUGIN_DIR . 'templates/admin-settings.php';
     }
     
@@ -349,8 +365,8 @@ class IDokladProcessor_Admin {
      * Save settings
      */
     private function save_settings() {
-        if (!wp_verify_nonce($_POST['_wpnonce'], 'idoklad_settings_nonce')) {
-            wp_die(__('Security check failed', 'idoklad-invoice-processor'));
+        if (!isset($_POST['_wpnonce']) || !wp_verify_nonce(wp_unslash($_POST['_wpnonce']), 'idoklad_settings_nonce')) {
+            return new WP_Error('idoklad_invalid_nonce', __('Security check failed', 'idoklad-invoice-processor'));
         }
 
         $fields = array(
@@ -364,14 +380,28 @@ class IDokladProcessor_Admin {
             'client_secret' => 'sanitize_text_field'
         );
 
-        foreach ($fields as $field => $callback) {
-            if (isset($_POST[$field])) {
-                $value = call_user_func($callback, $_POST[$field]);
-                update_option('idoklad_' . $field, $value);
+        $available_models = array();
+        if (class_exists('IDokladProcessor_ChatGPTIntegration')) {
+            $chatgpt = new IDokladProcessor_ChatGPTIntegration();
+            $available_models = array_keys($chatgpt->get_available_models());
+        }
 
-                if ($field === 'chatgpt_model') {
-                    update_option('idoklad_chatgpt_model_manual', 1);
-                }
+        foreach ($fields as $field => $callback) {
+            if (!isset($_POST[$field])) {
+                continue;
+            }
+
+            $raw_value = wp_unslash($_POST[$field]);
+            $value = is_callable($callback) ? call_user_func($callback, $raw_value) : sanitize_text_field($raw_value);
+
+            if ($field === 'chatgpt_model' && !empty($available_models) && !in_array($value, $available_models, true)) {
+                return new WP_Error('idoklad_invalid_model', __('Selected ChatGPT model is not available.', 'idoklad-invoice-processor'));
+            }
+
+            update_option('idoklad_' . $field, $value);
+
+            if ($field === 'chatgpt_model') {
+                update_option('idoklad_chatgpt_model_manual', 1);
             }
         }
 
@@ -384,21 +414,20 @@ class IDokladProcessor_Admin {
         );
 
         foreach ($email_fields as $field => $callback) {
-            if (isset($_POST[$field])) {
-                $value = call_user_func($callback, $_POST[$field]);
-                update_option('idoklad_' . $field, $value);
+            if (!isset($_POST[$field])) {
+                continue;
             }
+
+            $raw_value = wp_unslash($_POST[$field]);
+            $value = is_callable($callback) ? call_user_func($callback, $raw_value) : sanitize_text_field($raw_value);
+
+            update_option('idoklad_' . $field, $value);
         }
 
         update_option('idoklad_processing_engine', 'chatgpt');
+        update_option('idoklad_debug_mode', isset($_POST['debug_mode']) ? 1 : 0);
 
-        if (isset($_POST['debug_mode'])) {
-            update_option('idoklad_debug_mode', 1);
-        } else {
-            update_option('idoklad_debug_mode', 0);
-        }
-
-        echo '<div class="notice notice-success"><p>' . __('Settings saved successfully!', 'idoklad-invoice-processor') . '</p></div>';
+        return true;
     }
 
     /**
