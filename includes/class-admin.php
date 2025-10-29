@@ -626,18 +626,78 @@ class IDokladProcessor_Admin {
             $html .= '<p><strong>Processed:</strong> ' . esc_html($log->processed_at) . '</p>';
         }
         $html .= '</div>';
-        
+
+        $decoded_extracted = $log->extracted_data ? json_decode($log->extracted_data, true) : null;
+        $decoded_response = $log->idoklad_response ? json_decode($log->idoklad_response, true) : null;
+        if (!$decoded_response && !empty($log->api_response)) {
+            $decoded_response = json_decode($log->api_response, true);
+        }
+
+        $warnings = array();
+        $checklist = array();
+
+        if (is_array($decoded_extracted)) {
+            if (!empty($decoded_extracted['summary']['warnings']) && is_array($decoded_extracted['summary']['warnings'])) {
+                $warnings = array_merge($warnings, $decoded_extracted['summary']['warnings']);
+            }
+            if (!empty($decoded_extracted['parsed']['warnings']) && is_array($decoded_extracted['parsed']['warnings'])) {
+                $warnings = array_merge($warnings, $decoded_extracted['parsed']['warnings']);
+            }
+            if (!empty($decoded_extracted['warnings']) && is_array($decoded_extracted['warnings'])) {
+                $warnings = array_merge($warnings, $decoded_extracted['warnings']);
+            }
+
+            if (!empty($decoded_extracted['summary']['checklist']) && is_array($decoded_extracted['summary']['checklist'])) {
+                $checklist = array_merge($checklist, $decoded_extracted['summary']['checklist']);
+            }
+            if (!empty($decoded_extracted['parsed']['checklist']) && is_array($decoded_extracted['parsed']['checklist'])) {
+                $checklist = array_merge($checklist, $decoded_extracted['parsed']['checklist']);
+            }
+            if (!empty($decoded_extracted['checklist']) && is_array($decoded_extracted['checklist'])) {
+                $checklist = array_merge($checklist, $decoded_extracted['checklist']);
+            }
+        }
+
+        $warnings = array_values(array_unique(array_filter(array_map('trim', $warnings))));
+        $checklist = array_values(array_unique(array_filter(array_map('trim', $checklist))));
+
+        if (!empty($warnings)) {
+            $html .= '<div class="log-detail-section">';
+            $html .= '<h4>' . esc_html__('Warnings', 'idoklad-invoice-processor') . '</h4>';
+            $html .= '<ul class="log-list">';
+            foreach ($warnings as $warning) {
+                $html .= '<li>' . esc_html($warning) . '</li>';
+            }
+            $html .= '</ul>';
+            $html .= '</div>';
+        }
+
+        if (!empty($checklist)) {
+            $html .= '<div class="log-detail-section">';
+            $html .= '<h4>' . esc_html__('Checklist', 'idoklad-invoice-processor') . '</h4>';
+            $html .= '<ul class="log-list">';
+            foreach ($checklist as $item) {
+                $html .= '<li>' . esc_html($item) . '</li>';
+            }
+            $html .= '</ul>';
+            $html .= '</div>';
+        }
+
         if ($log->extracted_data) {
             $html .= '<div class="log-detail-section">';
             $html .= '<h4>Extracted Data</h4>';
-            $html .= '<div class="json-data">' . esc_html($log->extracted_data) . '</div>';
+            $pretty_extracted = $decoded_extracted ? wp_json_encode($decoded_extracted, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE) : $log->extracted_data;
+            $html .= '<div class="json-data">' . esc_html($pretty_extracted) . '</div>';
             $html .= '</div>';
         }
-        
-        if ($log->idoklad_response) {
+
+        $raw_response = $log->idoklad_response ?: ($log->api_response ?? '');
+
+        if ($raw_response) {
             $html .= '<div class="log-detail-section">';
             $html .= '<h4>iDoklad Response</h4>';
-            $html .= '<div class="json-data">' . esc_html($log->idoklad_response) . '</div>';
+            $pretty_response = $decoded_response ? wp_json_encode($decoded_response, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE) : $raw_response;
+            $html .= '<div class="json-data">' . esc_html($pretty_response) . '</div>';
             $html .= '</div>';
         }
         

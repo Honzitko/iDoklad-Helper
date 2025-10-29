@@ -27,6 +27,14 @@ class IDokladProcessor_InvoiceAIRest {
                     'required' => false,
                     'type' => 'string',
                 ),
+                'email_from' => array(
+                    'required' => false,
+                    'type' => 'string',
+                ),
+                'email_subject' => array(
+                    'required' => false,
+                    'type' => 'string',
+                ),
                 'send_to_idoklad' => array(
                     'required' => false,
                     'type' => 'boolean',
@@ -47,15 +55,44 @@ class IDokladProcessor_InvoiceAIRest {
             return new WP_REST_Response(array('error' => 'ChatGPT API key is not configured.'), 500);
         }
 
+        $logger = IDokladProcessor_Logger::get_instance();
+
         $invoice_text = trim((string) $request->get_param('invoice_text'));
         $invoice_url = trim((string) $request->get_param('invoice_url'));
         $send_to_idoklad = rest_sanitize_boolean($request->get_param('send_to_idoklad'));
+        $email_from = sanitize_email((string) $request->get_param('email_from'));
+        $email_subject = sanitize_text_field((string) $request->get_param('email_subject'));
+
+        $attachment_name = '';
+        if (!empty($invoice_url)) {
+            $path = parse_url($invoice_url, PHP_URL_PATH);
+            if (!empty($path)) {
+                $attachment_name = basename($path);
+            }
+        }
 
         if (empty($invoice_text) && empty($invoice_url)) {
             return new WP_REST_Response(array('error' => 'Provide invoice_text or invoice_url.'), 400);
         }
 
         $temp_file = null;
+        $log_id = null;
+
+        $logger->info('Invoice AI REST parse request received', array(
+            'invoice_url' => !empty($invoice_url),
+            'send_to_idoklad' => $send_to_idoklad,
+            'email_from' => $email_from,
+        ));
+
+        $email_for_storage = !empty($email_from) ? $email_from : 'api@local.test';
+
+        $log_id = IDokladProcessor_Database::add_log(array(
+            'email_from' => $email_for_storage,
+            'email_subject' => $email_subject ?: null,
+            'attachment_name' => $attachment_name ?: null,
+            'processing_status' => 'processing',
+            'extracted_data' => array('status' => 'initializing'),
+        ));
 
         try {
             if (empty($invoice_text) && !empty($invoice_url)) {
@@ -74,11 +111,44 @@ class IDokladProcessor_InvoiceAIRest {
 
             $chatgpt = new IDokladProcessor_ChatGPTIntegration();
             $parsed = $chatgpt->extract_invoice_data($invoice_text);
-            $payload = $chatgpt->build_idoklad_payload($parsed);
+            $payload = $chatgpt->build_idoklad_payload($parsed, array(
+                'email_from' => $email_for_storage,
+                'email_subject' => $email_subject,
+            ));
+
+            if ($log_id) {
+                $log_update = array(
+                    'processing_status' => $send_to_idoklad ? 'processing' : 'success',
+                    'extracted_data' => array(
+                        'parsed' => $parsed,
+                        'idoklad_payload' => $payload,
+                        'summary' => array(
+                            'warnings' => isset($parsed['warnings']) ? $parsed['warnings'] : array(),
+                            'checklist' => isset($parsed['checklist']) ? $parsed['checklist'] : array(),
+                        ),
+                    ),
+                );
+
+                if (!$send_to_idoklad) {
+                    $log_update['processed_at'] = current_time('mysql');
+                }
+
+                IDokladProcessor_Database::update_log($log_id, $log_update);
+            }
 
             $response_data = array(
+                'log_id' => $log_id,
                 'parsed' => $parsed,
                 'idoklad_payload' => $payload,
+                'warnings' => isset($parsed['warnings']) ? $parsed['warnings'] : array(),
+                'checklist' => isset($parsed['checklist']) ? $parsed['checklist'] : array(),
+            );
+
+            $response_data['debug'] = array(
+                'timestamp' => current_time('mysql'),
+                'model' => get_option('idoklad_chatgpt_model', 'gpt-4o'),
+                'send_to_idoklad' => (bool) $send_to_idoklad,
+                'email_from' => $email_for_storage,
             );
 
             if ($send_to_idoklad) {
@@ -96,12 +166,34 @@ class IDokladProcessor_InvoiceAIRest {
                 $integration = new IDokladProcessor_IDokladAPIV3Integration($client_id, $client_secret);
                 $idoklad_response = $integration->create_invoice_complete_workflow($payload);
                 $response_data['idoklad_response'] = $idoklad_response;
+
+                if ($log_id) {
+                    IDokladProcessor_Database::update_log($log_id, array(
+                        'processing_status' => 'success',
+                        'idoklad_response' => $idoklad_response,
+                        'processed_at' => current_time('mysql'),
+                    ));
+                }
+            } elseif ($log_id) {
+                IDokladProcessor_Database::update_log($log_id, array(
+                    'processed_at' => current_time('mysql'),
+                ));
             }
 
             return new WP_REST_Response($response_data, 200);
         } catch (Exception $e) {
+            if ($log_id) {
+                IDokladProcessor_Database::update_log($log_id, array(
+                    'processing_status' => 'failed',
+                    'error_message' => $e->getMessage(),
+                    'processed_at' => current_time('mysql'),
+                ));
+            }
+
+            $logger->error('Invoice AI REST parse request failed: ' . $e->getMessage());
             return new WP_REST_Response(array(
                 'error' => $e->getMessage(),
+                'log_id' => $log_id,
             ), 500);
         } finally {
             if ($temp_file && file_exists($temp_file)) {

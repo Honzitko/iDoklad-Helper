@@ -191,6 +191,7 @@ class IDokladProcessor_ChatGPTIntegration {
 
         // Handle ChatGPT parser responses that wrap data inside an Invoice object
         $invoice_section = null;
+        $structured_invoice = array();
         if (isset($data['Invoice']) && is_array($data['Invoice'])) {
             $invoice_section = $data['Invoice'];
         } elseif (isset($data['invoice']) && is_array($data['invoice'])) {
@@ -198,6 +199,7 @@ class IDokladProcessor_ChatGPTIntegration {
         }
 
         if ($invoice_section) {
+            $structured_invoice = $invoice_section;
             $prices = isset($invoice_section['Prices']) && is_array($invoice_section['Prices'])
                 ? $invoice_section['Prices']
                 : array();
@@ -278,6 +280,24 @@ class IDokladProcessor_ChatGPTIntegration {
             }
         }
 
+        $checklist_items = array();
+        if (isset($data['Checklist'])) {
+            $checklist_items = array_merge($checklist_items, $this->normalize_string_list($data['Checklist']));
+        }
+        if (!empty($invoice_section) && isset($invoice_section['Checklist'])) {
+            $checklist_items = array_merge($checklist_items, $this->normalize_string_list($invoice_section['Checklist']));
+        }
+        $checklist_items = array_values(array_unique(array_filter($checklist_items)));
+
+        $warning_items = array();
+        if (isset($data['Warnings'])) {
+            $warning_items = array_merge($warning_items, $this->normalize_string_list($data['Warnings']));
+        }
+        if (!empty($invoice_section) && isset($invoice_section['Warnings'])) {
+            $warning_items = array_merge($warning_items, $this->normalize_string_list($invoice_section['Warnings']));
+        }
+        $warning_items = array_values(array_unique(array_filter($warning_items)));
+
         $normalized = array();
 
         // Required fields
@@ -317,6 +337,42 @@ class IDokladProcessor_ChatGPTIntegration {
         if (isset($data['order_number'])) {
             $normalized['order_number'] = trim((string) $data['order_number']);
         }
+
+        if (!empty($structured_invoice)) {
+            $normalized['raw_invoice'] = $structured_invoice;
+        }
+
+        if (!empty($checklist_items)) {
+            $normalized['checklist'] = $checklist_items;
+        }
+
+        if (!empty($warning_items)) {
+            $normalized['warnings'] = $warning_items;
+        }
+
+        if (!empty($prices)) {
+            $normalized['prices'] = array(
+                'total_without_vat' => isset($prices['TotalWithoutVat']) ? $this->normalize_amount($prices['TotalWithoutVat']) : null,
+                'total_vat' => isset($prices['TotalVat']) ? $this->normalize_amount($prices['TotalVat']) : null,
+                'total_with_vat' => isset($prices['TotalWithVat']) ? $this->normalize_amount($prices['TotalWithVat']) : null,
+            );
+        }
+
+        if (!empty($partner)) {
+            $normalized['partner'] = array(
+                'name' => $partner['PartnerName'] ?? '',
+                'identification_number' => $partner['IdentificationNumber'] ?? '',
+                'vat_identification_number' => $partner['VatIdentificationNumber'] ?? '',
+                'address_full' => $partner['AddressFull'] ?? '',
+                'email' => $partner['Email'] ?? '',
+            );
+        }
+
+        $normalized['debug'] = array(
+            'source' => 'chatgpt',
+            'timestamp' => $this->get_current_timestamp(),
+            'has_structured_invoice' => !empty($structured_invoice)
+        );
 
         return $normalized;
     }
@@ -576,6 +632,17 @@ class IDokladProcessor_ChatGPTIntegration {
         $extracted_data = is_array($extracted_data) ? $extracted_data : array();
         $context = is_array($context) ? $context : array();
 
+        $invoice_section = array();
+        if (isset($extracted_data['raw_invoice']) && is_array($extracted_data['raw_invoice'])) {
+            $invoice_section = $extracted_data['raw_invoice'];
+        } elseif (isset($extracted_data['Invoice']) && is_array($extracted_data['Invoice'])) {
+            $invoice_section = $extracted_data['Invoice'];
+        }
+
+        if (!empty($invoice_section)) {
+            return $this->build_payload_from_invoice_section($invoice_section, $extracted_data, $context);
+        }
+
         $current_date = date('Y-m-d');
         $issue_date = !empty($extracted_data['date']) ? $extracted_data['date'] : $current_date;
         $due_date = !empty($extracted_data['due_date']) ? $extracted_data['due_date'] : date('Y-m-d', strtotime($issue_date . ' +14 days'));
@@ -641,6 +708,225 @@ class IDokladProcessor_ChatGPTIntegration {
         }
 
         return $payload;
+    }
+
+    private function build_payload_from_invoice_section($invoice_section, $extracted_data, $context) {
+        $issue_date = $this->normalize_date($invoice_section['DateOfIssue'] ?? ($extracted_data['date'] ?? date('Y-m-d')));
+        $tax_date = $this->normalize_date($invoice_section['DateOfTaxing'] ?? $issue_date);
+        $maturity_date = $this->normalize_date($invoice_section['DateOfMaturity'] ?? ($extracted_data['due_date'] ?? $issue_date));
+        $accounting_date = $this->normalize_date($invoice_section['DateOfAccountingEvent'] ?? $issue_date);
+        $vat_application_date = $this->normalize_date($invoice_section['DateOfVatApplication'] ?? $tax_date);
+
+        $document_number = !empty($invoice_section['DocumentNumber'])
+            ? trim((string) $invoice_section['DocumentNumber'])
+            : (!empty($extracted_data['invoice_number']) ? $extracted_data['invoice_number'] : 'AI-' . date('YmdHis'));
+
+        $order_number = !empty($invoice_section['OrderNumber'])
+            ? trim((string) $invoice_section['OrderNumber'])
+            : ($extracted_data['order_number'] ?? '');
+
+        $variable_symbol = $this->normalize_variable_symbol(
+            $invoice_section['VariableSymbol'] ?? ($extracted_data['variable_symbol'] ?? $document_number)
+        );
+
+        $currency_code = !empty($invoice_section['CurrencyCode'])
+            ? strtoupper((string) $invoice_section['CurrencyCode'])
+            : (!empty($extracted_data['currency']) ? strtoupper($extracted_data['currency']) : 'CZK');
+
+        $items = $this->build_idoklad_items(
+            isset($invoice_section['Items']) ? $invoice_section['Items'] : array(),
+            $this->resolve_total_amount_from_invoice($invoice_section, $extracted_data)
+        );
+
+        $partner_payload = $this->build_partner_payload_from_invoice($invoice_section, $extracted_data, $context);
+
+        $payload = array(
+            'DocumentNumber' => $document_number,
+            'OrderNumber' => $order_number,
+            'VariableSymbol' => $variable_symbol,
+            'DateOfIssue' => $issue_date,
+            'DateOfTaxing' => $tax_date,
+            'DateOfMaturity' => $maturity_date,
+            'DateOfAccountingEvent' => $accounting_date,
+            'DateOfVatApplication' => $vat_application_date,
+            'Description' => $invoice_section['Description'] ?? ($context['email_subject'] ?? __('Invoice processed via automation', 'idoklad-invoice-processor')),
+            'Note' => $this->normalize_notes($invoice_section['Notes'] ?? ($extracted_data['notes'] ?? '')),
+            'CurrencyId' => $this->map_currency_to_id($currency_code),
+            'CurrencyCode' => $currency_code,
+            'ExchangeRate' => $this->normalize_exchange_value($invoice_section['ExchangeRate'] ?? null),
+            'ExchangeRateAmount' => $this->normalize_exchange_value($invoice_section['ExchangeRateAmount'] ?? null),
+            'PaymentOptionId' => isset($invoice_section['PaymentOptionId']) ? (int) $invoice_section['PaymentOptionId'] : 1,
+            'ConstantSymbolId' => isset($invoice_section['ConstantSymbolId']) ? (int) $invoice_section['ConstantSymbolId'] : 7,
+            'PartnerId' => $this->normalize_partner_id_value($invoice_section['PartnerId'] ?? ($extracted_data['PartnerId'] ?? null)),
+            'ItemsTextPrefix' => $invoice_section['ItemsTextPrefix'] ?? 'Invoice items:',
+            'ItemsTextSuffix' => $invoice_section['ItemsTextSuffix'] ?? 'Thanks for your business.',
+            'Items' => $items,
+            'IsEet' => isset($invoice_section['IsEet']) ? (bool) $invoice_section['IsEet'] : false,
+            'EetResponsibility' => isset($invoice_section['EetResponsibility']) ? (int) $invoice_section['EetResponsibility'] : 0,
+            'IsIncomeTax' => isset($invoice_section['IsIncomeTax']) ? (bool) $invoice_section['IsIncomeTax'] : true,
+            'VatOnPayStatus' => isset($invoice_section['VatOnPayStatus']) ? (int) $invoice_section['VatOnPayStatus'] : 0,
+            'VatRegime' => isset($invoice_section['VatRegime']) ? (int) $invoice_section['VatRegime'] : 0,
+            'HasVatRegimeOss' => isset($invoice_section['HasVatRegimeOss']) ? (bool) $invoice_section['HasVatRegimeOss'] : false,
+            'ReportLanguage' => isset($invoice_section['ReportLanguage']) ? (int) $invoice_section['ReportLanguage'] : 1,
+        );
+
+        if (!empty($partner_payload)) {
+            $payload['partner_data'] = $partner_payload;
+        }
+
+        if (!empty($extracted_data['warnings'])) {
+            $payload['metadata']['warnings'] = $extracted_data['warnings'];
+        }
+
+        if (!empty($extracted_data['checklist'])) {
+            $payload['metadata']['checklist'] = $extracted_data['checklist'];
+        }
+
+        $payload['metadata']['source'] = 'chatgpt';
+        $payload['metadata']['generated_at'] = $this->get_current_timestamp();
+        $payload['metadata']['model'] = get_option('idoklad_chatgpt_model', 'gpt-4o');
+
+        if (!empty($invoice_section['Warnings'])) {
+            $payload['metadata']['invoice_warnings'] = $this->normalize_string_list($invoice_section['Warnings']);
+        }
+
+        if (!empty($invoice_section['Checklist'])) {
+            $payload['metadata']['invoice_checklist'] = $this->normalize_string_list($invoice_section['Checklist']);
+        }
+
+        return $payload;
+    }
+
+    private function resolve_total_amount_from_invoice($invoice_section, $extracted_data) {
+        if (isset($invoice_section['Prices']) && is_array($invoice_section['Prices'])) {
+            $prices = $invoice_section['Prices'];
+            if (isset($prices['TotalWithVat']) && $prices['TotalWithVat'] !== null) {
+                return $prices['TotalWithVat'];
+            }
+            if (isset($prices['TotalWithoutVat']) && $prices['TotalWithoutVat'] !== null) {
+                return $prices['TotalWithoutVat'];
+            }
+        }
+
+        return $extracted_data['total_amount'] ?? null;
+    }
+
+    private function build_partner_payload_from_invoice($invoice_section, $extracted_data, $context) {
+        $partner = isset($invoice_section['Partner']) && is_array($invoice_section['Partner'])
+            ? $invoice_section['Partner']
+            : array();
+
+        $partner_name = $partner['PartnerName'] ?? ($extracted_data['supplier_name'] ?? '');
+        $address_full = $partner['AddressFull'] ?? ($extracted_data['supplier_address'] ?? '');
+        $address_parts = $this->split_full_address($address_full);
+
+        $partner_payload = array(
+            'company' => $partner_name,
+            'email' => $partner['Email'] ?? ($context['email_from'] ?? ''),
+            'address' => $address_parts['street'] ?: $address_full,
+            'city' => $partner['City'] ?? ($address_parts['city'] ?? ($extracted_data['supplier_city'] ?? '')),
+            'postal_code' => $partner['PostalCode'] ?? ($address_parts['postal_code'] ?? ($extracted_data['supplier_postal_code'] ?? '')),
+            'identification_number' => $partner['IdentificationNumber'] ?? ($extracted_data['supplier_id_number'] ?? ''),
+            'vat_number' => $partner['VatIdentificationNumber'] ?? ($extracted_data['supplier_vat_number'] ?? ''),
+        );
+
+        return array_filter($partner_payload, function ($value) {
+            if (is_string($value)) {
+                return trim($value) !== '';
+            }
+            return !empty($value);
+        });
+    }
+
+    private function normalize_notes($notes) {
+        if (is_array($notes)) {
+            $notes = array_filter(array_map('trim', $notes), function ($note) {
+                return $note !== '';
+            });
+            return implode("\n", $notes);
+        }
+
+        if (is_string($notes)) {
+            return trim($notes);
+        }
+
+        return '';
+    }
+
+    private function normalize_exchange_value($value, $default = 1.0) {
+        if ($value === null || $value === '') {
+            return $default;
+        }
+
+        if (is_numeric($value)) {
+            return (float) $value;
+        }
+
+        $normalized = $this->normalize_amount($value);
+
+        return $normalized !== '' ? (float) $normalized : $default;
+    }
+
+    private function normalize_partner_id_value($value) {
+        $normalized = $this->normalize_partner_id($value);
+
+        return $normalized ? (int) $normalized : null;
+    }
+
+    private function normalize_partner_id($value) {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        if (is_numeric($value)) {
+            return (int) $value;
+        }
+
+        if (is_string($value)) {
+            $digits = preg_replace('/[^0-9]/', '', $value);
+            if ($digits !== '') {
+                return (int) $digits;
+            }
+        }
+
+        return null;
+    }
+
+    private function normalize_string_list($value) {
+        if (empty($value)) {
+            return array();
+        }
+
+        if (is_string($value)) {
+            $value = array($value);
+        }
+
+        if (!is_array($value)) {
+            return array();
+        }
+
+        $normalized = array();
+
+        foreach ($value as $item) {
+            if (!is_string($item)) {
+                continue;
+            }
+
+            $trimmed = trim($item);
+            if ($trimmed !== '') {
+                $normalized[] = $trimmed;
+            }
+        }
+
+        return $normalized;
+    }
+
+    private function get_current_timestamp() {
+        if (function_exists('current_time')) {
+            return current_time('mysql');
+        }
+
+        return date('Y-m-d H:i:s');
     }
 
     private function build_idoklad_items($items, $total_amount) {
