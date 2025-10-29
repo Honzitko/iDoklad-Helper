@@ -1308,7 +1308,7 @@ class IDokladProcessor_Admin {
             }
 
             wp_send_json_success(array(
-                'model' => get_option('idoklad_chatgpt_model', 'gpt-5-nano'),
+                'model' => get_option('idoklad_chatgpt_model', 'gpt-4o-mini'),
                 'text_length' => strlen($pdf_text),
                 'text_preview' => $text_preview,
                 'extracted_data' => $extracted_data,
