@@ -151,7 +151,7 @@ class IDokladInvoiceProcessor {
             'email_password' => '',
             'email_encryption' => 'ssl',
             'chatgpt_api_key' => '',
-            'chatgpt_model' => 'gpt-5-nano',
+            'chatgpt_model' => 'gpt-4o-mini',
             'chatgpt_model_manual' => 0,
             'chatgpt_prompt' => 'Extract invoice data from this PDF. Return JSON with: invoice_number, date, total_amount, supplier_name, supplier_vat_number, items (array with name, quantity, price), currency. Validate data completeness.',
             'client_id' => '',

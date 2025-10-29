@@ -22,10 +22,10 @@ class IDokladProcessor_ChatGPTIntegration {
 
     public function __construct() {
         $this->api_key = get_option('idoklad_chatgpt_api_key');
-        $this->model = get_option('idoklad_chatgpt_model', 'gpt-5-nano');
+        $this->model = get_option('idoklad_chatgpt_model', 'gpt-4o-mini');
 
         if (empty($this->model)) {
-            $this->model = 'gpt-5-nano';
+            $this->model = 'gpt-4o-mini';
         }
     }
     
@@ -930,7 +930,7 @@ class IDokladProcessor_ChatGPTIntegration {
 
         $payload['metadata']['source'] = 'chatgpt';
         $payload['metadata']['generated_at'] = $this->get_current_timestamp();
-        $payload['metadata']['model'] = get_option('idoklad_chatgpt_model', 'gpt-5-nano');
+        $payload['metadata']['model'] = get_option('idoklad_chatgpt_model', 'gpt-4o-mini');
 
         if (!empty($invoice_section['Warnings'])) {
             $payload['metadata']['invoice_warnings'] = $this->normalize_string_list($invoice_section['Warnings']);
@@ -1205,15 +1205,12 @@ class IDokladProcessor_ChatGPTIntegration {
      */
     public function get_available_models() {
         return array(
-            'gpt-5-nano' => 'GPT-5 Nano (Next-Gen Efficiency)',
-            'gpt-4o' => 'GPT-4o (Latest, Best Performance)',
             'gpt-4o-mini' => 'GPT-4o Mini (Fast & Cost-Effective)',
+            'gpt-4o' => 'GPT-4o (Latest, Best Performance)',
+            'gpt-4.1' => 'GPT-4.1 (Advanced reasoning)',
             'gpt-4-turbo' => 'GPT-4 Turbo (High Performance)',
             'gpt-4' => 'GPT-4 (Standard)',
-            'gpt-3.5-turbo' => 'GPT-3.5 Turbo (Fast & Affordable)',
-            'gpt-4o-2024-11-20' => 'GPT-4o (November 2024)',
-            'o1-preview' => 'o1-preview (Advanced Reasoning)',
-            'o1-mini' => 'o1-mini (Fast Reasoning)'
+            'gpt-3.5-turbo' => 'GPT-3.5 Turbo (Fast & Affordable)'
         );
     }
     
@@ -1307,7 +1304,7 @@ class IDokladProcessor_ChatGPTIntegration {
         $current_preference = $stored_preference;
 
         if ($current_preference === null || $current_preference === '') {
-            $current_preference = 'gpt-5-nano';
+            $current_preference = 'gpt-4o-mini';
         }
 
         if (empty($api_models)) {
@@ -1324,8 +1321,9 @@ class IDokladProcessor_ChatGPTIntegration {
 
         // Priority order for models (best to fallback)
         $preferred_models = array(
-            'gpt-5-nano',
+            'gpt-4o-mini',
             'gpt-4o',
+            'gpt-4.1',
             'gpt-4-turbo',
             'gpt-4',
             'gpt-3.5-turbo'
