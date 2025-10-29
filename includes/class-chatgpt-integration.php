@@ -1170,6 +1170,7 @@ class IDokladProcessor_ChatGPTIntegration {
      */
     public function get_available_models() {
         return array(
+            'gpt-5-nano' => 'GPT-5 Nano (Next-Gen Efficiency)',
             'gpt-4o' => 'GPT-4o (Latest, Best Performance)',
             'gpt-4o-mini' => 'GPT-4o Mini (Fast & Cost-Effective)',
             'gpt-4-turbo' => 'GPT-4 Turbo (High Performance)',
@@ -1243,9 +1244,10 @@ class IDokladProcessor_ChatGPTIntegration {
      */
     public function auto_detect_best_model() {
         $api_models = $this->get_api_available_models();
-        
+
         // Priority order for models (best to fallback)
         $preferred_models = array(
+            'gpt-5-nano',
             'gpt-4o',
             'gpt-4-turbo',
             'gpt-4',
