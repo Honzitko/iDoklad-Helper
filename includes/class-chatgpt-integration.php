@@ -857,67 +857,146 @@ class IDokladProcessor_ChatGPTIntegration {
     }
 
     private function build_payload_from_invoice_section($invoice_section, $extracted_data, $context) {
-        $issue_date = $this->normalize_date($invoice_section['DateOfIssue'] ?? ($extracted_data['date'] ?? date('Y-m-d')));
-        $tax_date = $this->normalize_date($invoice_section['DateOfTaxing'] ?? $issue_date);
-        $maturity_date = $this->normalize_date($invoice_section['DateOfMaturity'] ?? ($extracted_data['due_date'] ?? $issue_date));
-        $accounting_date = $this->normalize_date($invoice_section['DateOfAccountingEvent'] ?? $issue_date);
-        $vat_application_date = $this->normalize_date($invoice_section['DateOfVatApplication'] ?? $tax_date);
+        $payload = is_array($invoice_section) ? $invoice_section : array();
 
-        $document_number = !empty($invoice_section['DocumentNumber'])
-            ? trim((string) $invoice_section['DocumentNumber'])
+        $issue_date = $this->normalize_date($payload['DateOfIssue'] ?? ($extracted_data['date'] ?? date('Y-m-d')));
+        $tax_date = $this->normalize_date($payload['DateOfTaxing'] ?? $issue_date);
+        $maturity_date = $this->normalize_date($payload['DateOfMaturity'] ?? ($extracted_data['due_date'] ?? $issue_date));
+        $accounting_date = $this->normalize_date($payload['DateOfAccountingEvent'] ?? $issue_date);
+        $vat_application_date = $this->normalize_date($payload['DateOfVatApplication'] ?? $tax_date);
+
+        $document_number = !empty($payload['DocumentNumber'])
+            ? trim((string) $payload['DocumentNumber'])
             : (!empty($extracted_data['invoice_number']) ? $extracted_data['invoice_number'] : 'AI-' . date('YmdHis'));
 
-        $order_number = !empty($invoice_section['OrderNumber'])
-            ? trim((string) $invoice_section['OrderNumber'])
+        $order_number = !empty($payload['OrderNumber'])
+            ? trim((string) $payload['OrderNumber'])
             : ($extracted_data['order_number'] ?? '');
 
         $variable_symbol = $this->normalize_variable_symbol(
-            $invoice_section['VariableSymbol'] ?? ($extracted_data['variable_symbol'] ?? $document_number)
+            $payload['VariableSymbol'] ?? ($extracted_data['variable_symbol'] ?? $document_number)
         );
 
-        $currency_code = !empty($invoice_section['CurrencyCode'])
-            ? strtoupper((string) $invoice_section['CurrencyCode'])
+        $currency_code = !empty($payload['CurrencyCode'])
+            ? strtoupper((string) $payload['CurrencyCode'])
             : (!empty($extracted_data['currency']) ? strtoupper($extracted_data['currency']) : 'CZK');
 
-        $items = $this->build_idoklad_items(
-            isset($invoice_section['Items']) ? $invoice_section['Items'] : array(),
-            $this->resolve_total_amount_from_invoice($invoice_section, $extracted_data)
+        $total_amount = $this->resolve_total_amount_from_invoice($invoice_section, $extracted_data);
+
+        $payload['DocumentNumber'] = $document_number;
+        if (!empty($order_number)) {
+            $payload['OrderNumber'] = $order_number;
+        }
+
+        if (!empty($variable_symbol)) {
+            $payload['VariableSymbol'] = $variable_symbol;
+        }
+
+        $payload['DateOfIssue'] = $issue_date;
+        $payload['DateOfTaxing'] = $tax_date;
+        $payload['DateOfMaturity'] = $maturity_date;
+        $payload['DateOfAccountingEvent'] = $accounting_date;
+        $payload['DateOfVatApplication'] = $vat_application_date;
+
+        if (empty($payload['Description'])) {
+            $payload['Description'] = $context['email_subject'] ?? __('Invoice processed via automation', 'idoklad-invoice-processor');
+        }
+
+        $payload['Note'] = $this->normalize_notes($payload['Note'] ?? ($payload['Notes'] ?? ($extracted_data['notes'] ?? '')));
+
+        $payload['CurrencyCode'] = $currency_code;
+        $payload['CurrencyId'] = isset($payload['CurrencyId']) && $payload['CurrencyId'] !== ''
+            ? (int) $payload['CurrencyId']
+            : $this->map_currency_to_id($currency_code);
+
+        $payload['ExchangeRate'] = $this->normalize_exchange_value($payload['ExchangeRate'] ?? null);
+        $payload['ExchangeRateAmount'] = $this->normalize_exchange_value($payload['ExchangeRateAmount'] ?? null);
+
+        if (!isset($payload['PaymentOptionId'])) {
+            $payload['PaymentOptionId'] = 1;
+        }
+
+        if (!isset($payload['ConstantSymbolId'])) {
+            $payload['ConstantSymbolId'] = 7;
+        }
+
+        $payload['PartnerId'] = $this->normalize_partner_id_value($payload['PartnerId'] ?? ($extracted_data['PartnerId'] ?? null));
+
+        if (!isset($payload['ItemsTextPrefix']) || $payload['ItemsTextPrefix'] === '') {
+            $payload['ItemsTextPrefix'] = 'Invoice items:';
+        }
+
+        if (!isset($payload['ItemsTextSuffix']) || $payload['ItemsTextSuffix'] === '') {
+            $payload['ItemsTextSuffix'] = 'Thanks for your business.';
+        }
+
+        if (!isset($payload['IsEet'])) {
+            $payload['IsEet'] = false;
+        } else {
+            $payload['IsEet'] = (bool) $payload['IsEet'];
+        }
+
+        if (!isset($payload['EetResponsibility'])) {
+            $payload['EetResponsibility'] = 0;
+        } else {
+            $payload['EetResponsibility'] = (int) $payload['EetResponsibility'];
+        }
+
+        if (!isset($payload['IsIncomeTax'])) {
+            $payload['IsIncomeTax'] = true;
+        } else {
+            $payload['IsIncomeTax'] = (bool) $payload['IsIncomeTax'];
+        }
+
+        if (!isset($payload['VatOnPayStatus'])) {
+            $payload['VatOnPayStatus'] = 0;
+        } else {
+            $payload['VatOnPayStatus'] = (int) $payload['VatOnPayStatus'];
+        }
+
+        if (!isset($payload['VatRegime'])) {
+            $payload['VatRegime'] = 0;
+        } else {
+            $payload['VatRegime'] = (int) $payload['VatRegime'];
+        }
+
+        if (!isset($payload['HasVatRegimeOss'])) {
+            $payload['HasVatRegimeOss'] = false;
+        } else {
+            $payload['HasVatRegimeOss'] = (bool) $payload['HasVatRegimeOss'];
+        }
+
+        if (!isset($payload['ReportLanguage'])) {
+            $payload['ReportLanguage'] = 1;
+        } else {
+            $payload['ReportLanguage'] = (int) $payload['ReportLanguage'];
+        }
+
+        if (!isset($payload['TotalAmount']) || $payload['TotalAmount'] === '') {
+            $normalized_total = $this->normalize_amount($total_amount);
+            if ($normalized_total !== '') {
+                $payload['TotalAmount'] = $normalized_total;
+            }
+        } else {
+            $normalized_total = $this->normalize_amount($payload['TotalAmount']);
+            if ($normalized_total !== '') {
+                $payload['TotalAmount'] = $normalized_total;
+            }
+        }
+
+        $payload['Items'] = $this->normalize_invoice_section_items(
+            isset($payload['Items']) ? $payload['Items'] : array(),
+            $total_amount
         );
 
         $partner_payload = $this->build_partner_payload_from_invoice($invoice_section, $extracted_data, $context);
 
-        $payload = array(
-            'DocumentNumber' => $document_number,
-            'OrderNumber' => $order_number,
-            'VariableSymbol' => $variable_symbol,
-            'DateOfIssue' => $issue_date,
-            'DateOfTaxing' => $tax_date,
-            'DateOfMaturity' => $maturity_date,
-            'DateOfAccountingEvent' => $accounting_date,
-            'DateOfVatApplication' => $vat_application_date,
-            'Description' => $invoice_section['Description'] ?? ($context['email_subject'] ?? __('Invoice processed via automation', 'idoklad-invoice-processor')),
-            'Note' => $this->normalize_notes($invoice_section['Notes'] ?? ($extracted_data['notes'] ?? '')),
-            'CurrencyId' => $this->map_currency_to_id($currency_code),
-            'CurrencyCode' => $currency_code,
-            'ExchangeRate' => $this->normalize_exchange_value($invoice_section['ExchangeRate'] ?? null),
-            'ExchangeRateAmount' => $this->normalize_exchange_value($invoice_section['ExchangeRateAmount'] ?? null),
-            'PaymentOptionId' => isset($invoice_section['PaymentOptionId']) ? (int) $invoice_section['PaymentOptionId'] : 1,
-            'ConstantSymbolId' => isset($invoice_section['ConstantSymbolId']) ? (int) $invoice_section['ConstantSymbolId'] : 7,
-            'PartnerId' => $this->normalize_partner_id_value($invoice_section['PartnerId'] ?? ($extracted_data['PartnerId'] ?? null)),
-            'ItemsTextPrefix' => $invoice_section['ItemsTextPrefix'] ?? 'Invoice items:',
-            'ItemsTextSuffix' => $invoice_section['ItemsTextSuffix'] ?? 'Thanks for your business.',
-            'Items' => $items,
-            'IsEet' => isset($invoice_section['IsEet']) ? (bool) $invoice_section['IsEet'] : false,
-            'EetResponsibility' => isset($invoice_section['EetResponsibility']) ? (int) $invoice_section['EetResponsibility'] : 0,
-            'IsIncomeTax' => isset($invoice_section['IsIncomeTax']) ? (bool) $invoice_section['IsIncomeTax'] : true,
-            'VatOnPayStatus' => isset($invoice_section['VatOnPayStatus']) ? (int) $invoice_section['VatOnPayStatus'] : 0,
-            'VatRegime' => isset($invoice_section['VatRegime']) ? (int) $invoice_section['VatRegime'] : 0,
-            'HasVatRegimeOss' => isset($invoice_section['HasVatRegimeOss']) ? (bool) $invoice_section['HasVatRegimeOss'] : false,
-            'ReportLanguage' => isset($invoice_section['ReportLanguage']) ? (int) $invoice_section['ReportLanguage'] : 1,
-        );
-
         if (!empty($partner_payload)) {
             $payload['partner_data'] = $partner_payload;
+        }
+
+        if (!isset($payload['metadata']) || !is_array($payload['metadata'])) {
+            $payload['metadata'] = array();
         }
 
         if (!empty($extracted_data['warnings'])) {
@@ -941,6 +1020,137 @@ class IDokladProcessor_ChatGPTIntegration {
         }
 
         return $payload;
+    }
+
+    private function normalize_invoice_section_items($items, $total_amount) {
+        if (empty($items) || !is_array($items)) {
+            return $this->build_idoklad_items(array(), $total_amount);
+        }
+
+        $normalized_items = array();
+
+        foreach ($items as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+
+            $normalized_item = $item;
+
+            if (empty($normalized_item['Name'])) {
+                if (!empty($normalized_item['name'])) {
+                    $normalized_item['Name'] = trim((string) $normalized_item['name']);
+                } elseif (!empty($normalized_item['description'])) {
+                    $normalized_item['Name'] = trim((string) $normalized_item['description']);
+                } elseif (!empty($normalized_item['Description'])) {
+                    $normalized_item['Name'] = trim((string) $normalized_item['Description']);
+                } else {
+                    $normalized_item['Name'] = __('Invoice item', 'idoklad-invoice-processor');
+                }
+            }
+
+            if (empty($normalized_item['Unit'])) {
+                if (!empty($normalized_item['unit'])) {
+                    $normalized_item['Unit'] = $this->normalize_unit_label($normalized_item['unit']);
+                } elseif (!empty($normalized_item['UnitOfMeasure'])) {
+                    $normalized_item['Unit'] = $this->normalize_unit_label($normalized_item['UnitOfMeasure']);
+                } else {
+                    $normalized_item['Unit'] = 'pcs';
+                }
+            } else {
+                $normalized_item['Unit'] = $this->normalize_unit_label($normalized_item['Unit']);
+            }
+
+            if (!isset($normalized_item['Amount']) || $normalized_item['Amount'] === '') {
+                if (isset($normalized_item['Quantity'])) {
+                    $normalized_item['Amount'] = $normalized_item['Quantity'];
+                } elseif (isset($normalized_item['quantity'])) {
+                    $normalized_item['Amount'] = $normalized_item['quantity'];
+                } elseif (isset($normalized_item['amount'])) {
+                    $normalized_item['Amount'] = $normalized_item['amount'];
+                } else {
+                    $normalized_item['Amount'] = 1;
+                }
+            }
+            $amount = $this->normalize_amount($normalized_item['Amount']);
+            $normalized_item['Amount'] = $amount !== '' ? $amount : 1;
+
+            if (!isset($normalized_item['UnitPrice']) || $normalized_item['UnitPrice'] === '') {
+                if (isset($normalized_item['price'])) {
+                    $normalized_item['UnitPrice'] = $normalized_item['price'];
+                } elseif (isset($normalized_item['Price'])) {
+                    $normalized_item['UnitPrice'] = $normalized_item['Price'];
+                }
+            }
+            $unit_price = $this->normalize_amount($normalized_item['UnitPrice'] ?? 0);
+            $normalized_item['UnitPrice'] = $unit_price !== '' ? $unit_price : 0.0;
+
+            if (!isset($normalized_item['Total']) || $normalized_item['Total'] === '') {
+                if (isset($normalized_item['total'])) {
+                    $normalized_item['Total'] = $normalized_item['total'];
+                }
+            }
+            $total = $this->normalize_amount($normalized_item['Total'] ?? '');
+            if ($total === '') {
+                $total = $normalized_item['Amount'] * $normalized_item['UnitPrice'];
+            }
+            $normalized_item['Total'] = $total;
+
+            if (!isset($normalized_item['PriceType'])) {
+                if (isset($normalized_item['price_type'])) {
+                    $normalized_item['PriceType'] = (int) $normalized_item['price_type'];
+                } else {
+                    $normalized_item['PriceType'] = 1;
+                }
+            } else {
+                $normalized_item['PriceType'] = (int) $normalized_item['PriceType'];
+            }
+
+            if (!isset($normalized_item['VatRateType'])) {
+                if (isset($normalized_item['vat_rate_type'])) {
+                    $normalized_item['VatRateType'] = (int) $normalized_item['vat_rate_type'];
+                } else {
+                    $normalized_item['VatRateType'] = 2;
+                }
+            } else {
+                $normalized_item['VatRateType'] = (int) $normalized_item['VatRateType'];
+            }
+
+            if (!isset($normalized_item['VatRate'])) {
+                if (isset($normalized_item['vat_rate'])) {
+                    $normalized_item['VatRate'] = $normalized_item['vat_rate'];
+                } else {
+                    $normalized_item['VatRate'] = $normalized_item['VatRateType'] === 2 ? 0.0 : 21.0;
+                }
+            }
+            $vat_rate = $this->normalize_amount($normalized_item['VatRate']);
+            $normalized_item['VatRate'] = $vat_rate !== '' ? (float) $vat_rate : 0.0;
+
+            if (isset($normalized_item['DiscountPercentage'])) {
+                $discount = $this->normalize_amount($normalized_item['DiscountPercentage']);
+                $normalized_item['DiscountPercentage'] = $discount !== '' ? (float) $discount : 0.0;
+            } elseif (isset($normalized_item['discount_percentage'])) {
+                $discount = $this->normalize_amount($normalized_item['discount_percentage']);
+                $normalized_item['DiscountPercentage'] = $discount !== '' ? (float) $discount : 0.0;
+            } else {
+                $normalized_item['DiscountPercentage'] = 0.0;
+            }
+
+            if (isset($normalized_item['IsTaxMovement'])) {
+                $normalized_item['IsTaxMovement'] = (bool) $normalized_item['IsTaxMovement'];
+            } elseif (isset($normalized_item['is_tax_movement'])) {
+                $normalized_item['IsTaxMovement'] = (bool) $normalized_item['is_tax_movement'];
+            } else {
+                $normalized_item['IsTaxMovement'] = false;
+            }
+
+            $normalized_items[] = $normalized_item;
+        }
+
+        if (empty($normalized_items)) {
+            return $this->build_idoklad_items(array(), $total_amount);
+        }
+
+        return $normalized_items;
     }
 
     private function resolve_total_amount_from_invoice($invoice_section, $extracted_data) {
