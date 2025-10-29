@@ -15,6 +15,7 @@ class IDokladProcessor_EmailMonitor {
     private $password;
     private $encryption;
     private $connection;
+    private $last_check_result = array();
 
     public function __construct() {
         $this->host = get_option('idoklad_email_host');
@@ -27,14 +28,17 @@ class IDokladProcessor_EmailMonitor {
     }
 
     public function check_for_new_emails() {
-        return $this->check_emails();
+        $result = $this->check_emails();
+        $this->last_check_result = $result;
+
+        return $result;
     }
 
     public function check_emails() {
         $result = array(
             'success' => true,
             'emails_found' => 0,
-            'pdfs_processed' => 0,
+            'queue_items_added' => 0,
             'message' => ''
         );
 
@@ -44,19 +48,19 @@ class IDokladProcessor_EmailMonitor {
             $result['emails_found'] = count($emails);
 
             foreach ($emails as $email_id) {
-                $result['pdfs_processed'] += $this->process_email($email_id);
+                $result['queue_items_added'] += $this->queue_email_for_processing($email_id);
             }
 
             $this->disconnect_from_email();
 
             if ($result['emails_found'] === 0) {
                 $result['message'] = __('No new emails found.', 'idoklad-invoice-processor');
-            } elseif ($result['pdfs_processed'] === 0) {
-                $result['message'] = __('Emails processed but no PDF attachments were handled.', 'idoklad-invoice-processor');
+            } elseif ($result['queue_items_added'] === 0) {
+                $result['message'] = __('New emails detected but no PDF attachments were queued.', 'idoklad-invoice-processor');
             } else {
                 $result['message'] = sprintf(
-                    __('Processed %1$d PDF attachment(s) from %2$d email(s).', 'idoklad-invoice-processor'),
-                    $result['pdfs_processed'],
+                    __('Queued %1$d PDF attachment(s) from %2$d email(s).', 'idoklad-invoice-processor'),
+                    $result['queue_items_added'],
                     $result['emails_found']
                 );
             }
@@ -71,8 +75,7 @@ class IDokladProcessor_EmailMonitor {
     }
 
     public function process_pending_emails() {
-        $result = $this->check_emails();
-        return isset($result['pdfs_processed']) ? (int) $result['pdfs_processed'] : 0;
+        return 0;
     }
 
     private function connect_to_email() {
@@ -101,7 +104,12 @@ class IDokladProcessor_EmailMonitor {
     }
 
     private function process_email($email_id) {
-        $processed = 0;
+        return $this->queue_email_for_processing($email_id);
+    }
+
+    private function queue_email_for_processing($email_id) {
+        global $wpdb;
+        $queued = 0;
 
         try {
             $header = imap_headerinfo($this->connection, $email_id);
@@ -135,38 +143,40 @@ class IDokladProcessor_EmailMonitor {
                 return 0;
             }
 
+            $pdf_index = 0;
             foreach ($attachments as $attachment) {
                 if (!$this->is_pdf_attachment($attachment)) {
                     continue;
                 }
 
                 $file_path = $this->save_attachment($attachment, $email_id);
-                $log_id = IDokladProcessor_Database::add_log(array(
+                $queue_email_id = $this->generate_queue_email_id($email_id, $attachment['filename'], $pdf_index);
+
+                $queue_id = IDokladProcessor_Database::add_to_queue(array(
+                    'email_id' => $queue_email_id,
                     'email_from' => $from_email,
                     'email_subject' => $subject,
-                    'attachment_name' => $attachment['filename'],
-                    'processing_status' => 'processing'
+                    'attachment_path' => $file_path
                 ));
-                if (!$log_id) {
-                    $log_id = null;
-                }
 
-                try {
-                    $this->process_pdf($file_path, $from_email, $subject, $log_id);
-                    $processed++;
-                } catch (Exception $e) {
-                    if ($log_id) {
-                        IDokladProcessor_Database::update_log($log_id, array(
-                            'processing_status' => 'failed',
-                            'error_message' => $e->getMessage(),
-                            'processed_at' => current_time('mysql')
-                        ));
-                    }
+                if ($queue_id) {
+                    IDokladProcessor_Database::add_log(array(
+                        'email_from' => $from_email,
+                        'email_subject' => $subject,
+                        'attachment_name' => $attachment['filename'],
+                        'processing_status' => 'pending'
+                    ));
 
-                    $notification = new IDokladProcessor_Notification();
-                    $notification->send_failure_notification($from_email, $e->getMessage());
-                    error_log('iDoklad Email Monitor: Failed to process attachment ' . $attachment['filename'] . ': ' . $e->getMessage());
-                } finally {
+                    IDokladProcessor_Database::add_queue_step($queue_id, 'Queued from email', array(
+                        'attachment' => $attachment['filename'],
+                        'queued_at' => current_time('mysql')
+                    ));
+
+                    $queued++;
+                    $pdf_index++;
+                } else {
+                    error_log('iDoklad Email Monitor: Failed to queue attachment ' . $attachment['filename'] . ' for email ' . $email_id . ': ' . $wpdb->last_error);
+
                     if (file_exists($file_path)) {
                         unlink($file_path);
                     }
@@ -178,7 +188,15 @@ class IDokladProcessor_EmailMonitor {
             error_log('iDoklad Email Monitor: Error processing email ' . $email_id . ': ' . $e->getMessage());
         }
 
-        return $processed;
+        return $queued;
+    }
+
+    private function generate_queue_email_id($email_id, $filename, $index) {
+        $hash = substr(md5($filename . '|' . $email_id . '|' . $index), 0, 8);
+        $sequence = $index + 1;
+        $queue_id = $email_id . '-' . $sequence . '-' . $hash;
+
+        return substr($queue_id, 0, 100);
     }
 
     private function get_email_attachments($email_id) {
@@ -261,44 +279,6 @@ class IDokladProcessor_EmailMonitor {
         }
 
         return $file_path;
-    }
-
-    private function process_pdf($file_path, $from_email, $subject, $log_id) {
-        $pdf_processor = new IDokladProcessor_PDFProcessor();
-        $chatgpt = new IDokladProcessor_ChatGPTIntegration();
-        $notification = new IDokladProcessor_Notification();
-        $idoklad_api = $this->initialize_idoklad_api_client();
-
-        $pdf_text = $pdf_processor->extract_text($file_path);
-        $extracted_data = $chatgpt->extract_invoice_data($pdf_text);
-        $invoice_payload = $chatgpt->build_idoklad_payload($extracted_data, array(
-            'email_subject' => $subject,
-            'email_from' => $from_email
-        ));
-
-        $idoklad_response = $idoklad_api->create_invoice_complete_workflow($invoice_payload);
-
-        if ($log_id) {
-            IDokladProcessor_Database::update_log($log_id, array(
-                'processing_status' => 'success',
-                'extracted_data' => $extracted_data,
-                'api_response' => $idoklad_response,
-                'processed_at' => current_time('mysql')
-            ));
-        }
-
-        $notification->send_success_notification($from_email, $extracted_data, $idoklad_response);
-    }
-
-    private function initialize_idoklad_api_client() {
-        $client_id = get_option('idoklad_client_id');
-        $client_secret = get_option('idoklad_client_secret');
-
-        if (empty($client_id) || empty($client_secret)) {
-            throw new Exception('iDoklad API credentials are not configured');
-        }
-
-        return new IDokladProcessor_IDokladAPIV3Integration($client_id, $client_secret);
     }
 
     private function extract_email_address($email_string) {
