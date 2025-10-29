@@ -1,38 +1,26 @@
 <?php
 /**
- * PDF processing class - Enhanced with native PHP parsing
+ * Simplified PDF processing class
  */
 
 if (!defined('ABSPATH')) {
     exit;
 }
 
-// Include native PHP PDF parser
 require_once IDOKLAD_PROCESSOR_PLUGIN_DIR . 'includes/class-pdf-parser-native.php';
 
 class IDokladProcessor_PDFProcessor {
-    
-    private $temp_dir;
+
     private $native_parser;
-    private $use_native_parser_first;
-    private $use_pdfco;
-    
+
     public function __construct() {
-        $this->temp_dir = sys_get_temp_dir();
         $this->native_parser = new IDokladProcessor_NativePDFParser();
-        // Use native parser first by default (no external dependencies)
-        $this->use_native_parser_first = get_option('idoklad_use_native_parser_first', true);
-        // Use PDF.co as primary processor (replaces all other methods)
-        $this->use_pdfco = (bool) get_option('idoklad_use_pdfco', true);
     }
-    
+
     /**
-     * Extract text from PDF file
-     * 
-     * @param string $pdf_path Path to the PDF file
-     * @param int|null $queue_id Optional queue ID for logging
+     * Extract plain text from a PDF file using the native parser only.
      */
-    public function extract_text($pdf_path, $queue_id = null) {
+    public function extract_text($pdf_path) {
         if (!file_exists($pdf_path)) {
             throw new Exception('PDF file not found: ' . $pdf_path);
         }
@@ -41,389 +29,44 @@ class IDokladProcessor_PDFProcessor {
             error_log('iDoklad PDF Processor: Extracting text from ' . $pdf_path);
         }
 
-        $can_use_pdfco = $this->use_pdfco && !empty(get_option('idoklad_pdfco_api_key'));
-        $text = '';
-
-        if ($can_use_pdfco) {
-            if ($queue_id) {
-                IDokladProcessor_Database::add_queue_step($queue_id, 'PDF Processing: Using PDF.co cloud service', null, false);
-            }
-
-            try {
-                require_once IDOKLAD_PROCESSOR_PLUGIN_DIR . 'includes/class-pdfco-processor.php';
-                $pdfco = new IDokladProcessor_PDFCoProcessor();
-                $text = $pdfco->extract_text($pdf_path, $queue_id);
-
-                if (get_option('idoklad_debug_mode')) {
-                    error_log('iDoklad PDF Processor: PDF.co extracted ' . strlen($text) . ' characters');
-                }
-            } catch (Exception $e) {
-                if ($queue_id) {
-                    IDokladProcessor_Database::add_queue_step($queue_id, 'PDF.co extraction failed, switching to local fallbacks', array(
-                        'error' => $e->getMessage()
-                    ), true);
-                }
-
-                if (get_option('idoklad_debug_mode')) {
-                    error_log('iDoklad PDF Processor: PDF.co extraction failed: ' . $e->getMessage());
-                }
-
-                $text = '';
-            }
-        }
-
-        if (empty($text)) {
-            if ($queue_id) {
-                IDokladProcessor_Database::add_queue_step($queue_id, 'PDF Processing: Using local extraction fallbacks', null, false);
-            }
-
-            $text = $this->extract_with_fallbacks($pdf_path, $queue_id);
-        }
-
-        // Clean up extracted text
+        $text = $this->native_parser->extract_text($pdf_path);
         $text = $this->clean_extracted_text($text);
 
         if (empty($text)) {
-            throw new Exception('No text could be extracted from PDF using available methods');
+            throw new Exception('No text could be extracted from PDF');
         }
 
         return $text;
     }
 
-    /**
-     * Upload PDF to PDF.co and return the temporary file URL.
-     */
-    public function upload_to_pdf_co($pdf_path, $queue_id = null) {
-        if (!file_exists($pdf_path)) {
-            throw new Exception('PDF file not found: ' . $pdf_path);
-        }
-
-        require_once IDOKLAD_PROCESSOR_PLUGIN_DIR . 'includes/class-pdfco-processor.php';
-        $pdfco = new IDokladProcessor_PDFCoProcessor();
-
-        if ($queue_id) {
-            IDokladProcessor_Database::add_queue_step($queue_id, 'Uploading PDF to PDF.co', array(
-                'filename' => basename($pdf_path)
-            ));
-        }
-
-        try {
-            $url = $pdfco->upload_file($pdf_path);
-
-            if ($queue_id) {
-                $logged_url = $url;
-                if (is_string($logged_url) && strlen($logged_url) > 100) {
-                    $logged_url = substr($logged_url, 0, 100) . '…';
-                }
-
-                IDokladProcessor_Database::add_queue_step($queue_id, 'PDF uploaded to PDF.co', array(
-                    'pdf_url' => $logged_url
-                ));
-            }
-
-            return $url;
-
-        } catch (Exception $e) {
-            if ($queue_id) {
-                IDokladProcessor_Database::add_queue_step($queue_id, 'PDF.co upload failed', array(
-                    'error' => $e->getMessage()
-                ), true);
-            }
-
-            throw $e;
-        }
-    }
-    
-    /**
-     * Extract text using configured fallback methods
-     */
-    private function extract_with_fallbacks($pdf_path, $queue_id = null) {
-        $methods = $this->build_fallback_method_order();
-
-        foreach ($methods as $method_key => $callback) {
-            if ($queue_id) {
-                IDokladProcessor_Database::add_queue_step($queue_id, 'PDF Processing: Trying ' . $method_key . ' extraction method');
-            }
-
-            $text = call_user_func($callback, $pdf_path);
-
-            if (!empty($text)) {
-                if ($queue_id) {
-                    IDokladProcessor_Database::add_queue_step($queue_id, 'PDF Processing: ' . $method_key . ' extraction succeeded', array(
-                        'text_length' => strlen($text)
-                    ));
-                }
-
-                return $text;
-            }
-
-            if ($queue_id) {
-                IDokladProcessor_Database::add_queue_step($queue_id, 'PDF Processing: ' . $method_key . ' extraction failed');
-            }
-        }
-
-        return '';
-    }
-
-    /**
-     * Build fallback method order based on settings
-     */
-    private function build_fallback_method_order() {
-        $methods = array(
-            'native parser' => array($this, 'extract_with_native_parser'),
-            'pdftotext' => array($this, 'extract_with_pdftotext'),
-            'poppler' => array($this, 'extract_with_poppler'),
-            'ghostscript' => array($this, 'extract_with_ghostscript')
-        );
-
-        if (!$this->use_native_parser_first) {
-            // Move native parser to end if not preferred
-            $native = array('native parser' => $methods['native parser']);
-            unset($methods['native parser']);
-            $methods = $methods + $native;
-        }
-
-        return $methods;
-    }
-
-    /**
-     * Extract text using native PHP parser
-     */
-    private function extract_with_native_parser($pdf_path) {
-        try {
-            if (get_option('idoklad_debug_mode')) {
-                error_log('iDoklad PDF Processor: Trying native PHP parser');
-            }
-
-            $text = $this->native_parser->extract_text($pdf_path);
-
-            if (!empty($text)) {
-                if (get_option('idoklad_debug_mode')) {
-                    error_log('iDoklad PDF Processor: Native PHP parser succeeded');
-                }
-                return $text;
-            }
-        } catch (Exception $e) {
-            if (get_option('idoklad_debug_mode')) {
-                error_log('iDoklad PDF Processor: Native PHP parser failed: ' . $e->getMessage());
-            }
-        }
-
-        return '';
-    }
-
-    /**
-     * Extract text using pdftotext command
-     */
-    private function extract_with_pdftotext($pdf_path) {
-        if (!function_exists('exec')) {
-            return '';
-        }
-
-        $output_file = $this->temp_dir . '/pdf_text_' . uniqid() . '.txt';
-        $command = "pdftotext -layout \"$pdf_path\" \"$output_file\" 2>/dev/null";
-
-        exec($command, $output, $return_code);
-
-        if ($return_code === 0 && file_exists($output_file)) {
-            $text = file_get_contents($output_file);
-            unlink($output_file);
-            return $text;
-        }
-
-        return '';
-    }
-
-    /**
-     * Extract text using Poppler utilities
-     */
-    private function extract_with_poppler($pdf_path) {
-        if (!function_exists('exec')) {
-            return '';
-        }
-
-        $output_file = $this->temp_dir . '/pdf_text_' . uniqid() . '.txt';
-        $command = "pdftotext -enc UTF-8 \"$pdf_path\" \"$output_file\" 2>/dev/null";
-
-        exec($command, $output, $return_code);
-
-        if ($return_code === 0 && file_exists($output_file)) {
-            $text = file_get_contents($output_file);
-            unlink($output_file);
-            return $text;
-        }
-
-        return '';
-    }
-
-    /**
-     * Extract text using Ghostscript
-     */
-    private function extract_with_ghostscript($pdf_path) {
-        if (!function_exists('exec')) {
-            return '';
-        }
-
-        $output_file = $this->temp_dir . '/pdf_text_' . uniqid() . '.txt';
-        $command = "gs -dNODISPLAY -dNOPAUSE -dBATCH -sDEVICE=txtwrite -sOutputFile=\"$output_file\" \"$pdf_path\" 2>/dev/null";
-
-        exec($command, $output, $return_code);
-
-        if ($return_code === 0 && file_exists($output_file)) {
-            $text = file_get_contents($output_file);
-            unlink($output_file);
-            return $text;
-        }
-
-        return '';
-    }
-    
-    /**
-     * Clean extracted text
-     */
-    private function clean_extracted_text($text) {
-        // Remove excessive whitespace
-        $text = preg_replace('/\s+/', ' ', $text);
-        
-        // Remove control characters
-        $text = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', '', $text);
-        
-        // Normalize line breaks
-        $text = str_replace(array("\r\n", "\r"), "\n", $text);
-        
-        // Remove empty lines
-        $text = preg_replace('/\n\s*\n/', "\n", $text);
-        
-        // Trim whitespace
-        $text = trim($text);
-        
-        return $text;
-    }
-    
-    /**
-     * Get PDF metadata
-     */
     public function get_metadata($pdf_path) {
-        if (!file_exists($pdf_path)) {
-            throw new Exception('PDF file not found: ' . $pdf_path);
-        }
-        
-        try {
-            return $this->native_parser->get_metadata($pdf_path);
-        } catch (Exception $e) {
-            if (get_option('idoklad_debug_mode')) {
-                error_log('iDoklad PDF Processor: Could not extract metadata: ' . $e->getMessage());
-            }
-            return array();
-        }
+        return $this->native_parser->get_metadata($pdf_path);
     }
-    
-    /**
-     * Get page count
-     */
+
     public function get_page_count($pdf_path) {
-        if (!file_exists($pdf_path)) {
-            throw new Exception('PDF file not found: ' . $pdf_path);
-        }
-        
-        try {
-            return $this->native_parser->get_page_count($pdf_path);
-        } catch (Exception $e) {
-            if (get_option('idoklad_debug_mode')) {
-                error_log('iDoklad PDF Processor: Could not get page count: ' . $e->getMessage());
-            }
-            return 0;
-        }
+        return $this->native_parser->get_page_count($pdf_path);
     }
-    
-    /**
-     * Test PDF parsing capabilities
-     */
+
     public function test_parsing_methods() {
-        $results = array(
+        return array(
             'native_parser' => array(
                 'available' => true,
-                'name' => 'Native PHP Parser (No dependencies)',
-                'description' => 'Pure PHP implementation, works on any server',
-                'category' => 'Text Extraction'
-            ),
-            'pdftotext' => array(
-                'available' => $this->check_command_available('pdftotext'),
-                'name' => 'pdftotext',
-                'description' => 'Command-line tool from Poppler utils',
-                'category' => 'Text Extraction'
-            ),
-            'ghostscript' => array(
-                'available' => $this->check_command_available('gs'),
-                'name' => 'Ghostscript',
-                'description' => 'Command-line PostScript/PDF interpreter',
+                'name' => 'Native PHP Parser',
+                'description' => __('Pure PHP extraction (no external services)', 'idoklad-invoice-processor'),
                 'category' => 'Text Extraction'
             )
         );
-        
-        // OCR is now handled by PDF.co automatically
-        
-        return $results;
     }
-    
+
     /**
-     * Test OCR capabilities (now handled by PDF.co)
+     * Clean extracted text for downstream processing.
      */
-    public function test_ocr_capabilities() {
-        return array(
-            'enabled' => true,
-            'message' => 'OCR is handled automatically by PDF.co'
-        );
-        
-        // Legacy code removed - PDF.co handles OCR automatically
-    }
-    
-    /**
-     * Check if a command is available
-     */
-    private function check_command_available($command) {
-        if (!function_exists('exec')) {
-            return false;
-        }
-        
-        $output = array();
-        $return_var = 0;
-        
-        exec("which $command 2>/dev/null", $output, $return_var);
-        
-        return $return_var === 0 && !empty($output);
-    }
-    
-    /**
-     * Get PDF information for diagnostics
-     */
-    public function get_pdf_info($pdf_path) {
-        if (!file_exists($pdf_path)) {
-            throw new Exception('PDF file not found: ' . $pdf_path);
-        }
-        
-        $info = array(
-            'file_size' => filesize($pdf_path),
-            'file_size_formatted' => $this->format_bytes(filesize($pdf_path)),
-            'readable' => is_readable($pdf_path),
-            'metadata' => $this->get_metadata($pdf_path),
-            'page_count' => $this->get_page_count($pdf_path),
-            'parsing_methods' => $this->test_parsing_methods()
-        );
-        
-        return $info;
-    }
-    
-    /**
-     * Format bytes to human-readable format
-     */
-    private function format_bytes($bytes, $precision = 2) {
-        $units = array('B', 'KB', 'MB', 'GB', 'TB');
-        
-        for ($i = 0; $bytes > 1024 && $i < count($units) - 1; $i++) {
-            $bytes /= 1024;
-        }
-        
-        return round($bytes, $precision) . ' ' . $units[$i];
+    private function clean_extracted_text($text) {
+        $text = (string) $text;
+        $text = preg_replace('/\s+/', ' ', $text);
+        $text = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', '', $text);
+        $text = trim($text);
+
+        return $text;
     }
 }

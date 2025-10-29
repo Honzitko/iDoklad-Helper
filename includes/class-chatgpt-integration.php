@@ -255,7 +255,7 @@ class IDokladProcessor_ChatGPTIntegration {
      */
     private function normalize_items($items) {
         $normalized_items = array();
-        
+
         foreach ($items as $item) {
             if (!is_array($item)) {
                 continue;
@@ -277,6 +277,122 @@ class IDokladProcessor_ChatGPTIntegration {
         }
         
         return $normalized_items;
+    }
+
+    /**
+     * Build iDoklad-compatible payload from extracted data.
+     */
+    public function build_idoklad_payload($extracted_data, $context = array()) {
+        $extracted_data = is_array($extracted_data) ? $extracted_data : array();
+        $context = is_array($context) ? $context : array();
+
+        $current_date = date('Y-m-d');
+        $issue_date = !empty($extracted_data['date']) ? $extracted_data['date'] : $current_date;
+        $due_date = !empty($extracted_data['due_date']) ? $extracted_data['due_date'] : date('Y-m-d', strtotime($issue_date . ' +14 days'));
+
+        $document_number = !empty($extracted_data['invoice_number'])
+            ? $extracted_data['invoice_number']
+            : 'AI-' . date('YmdHis');
+
+        $currency_code = !empty($extracted_data['currency']) ? strtoupper($extracted_data['currency']) : 'CZK';
+
+        $items = $this->build_idoklad_items(
+            isset($extracted_data['items']) ? $extracted_data['items'] : array(),
+            isset($extracted_data['total_amount']) ? $extracted_data['total_amount'] : null
+        );
+
+        $partner_data = array_filter(array(
+            'company' => $extracted_data['supplier_name'] ?? ($context['email_from'] ?? ''),
+            'email' => $context['email_from'] ?? '',
+            'vat_number' => $extracted_data['supplier_vat_number'] ?? '',
+            'address' => $extracted_data['supplier_address'] ?? '',
+            'city' => $extracted_data['supplier_city'] ?? '',
+            'postal_code' => $extracted_data['supplier_postal_code'] ?? ''
+        ));
+
+        $payload = array(
+            'DocumentNumber' => $document_number,
+            'date' => $issue_date,
+            'DateOfIssue' => $issue_date,
+            'DateOfMaturity' => $due_date,
+            'Description' => !empty($context['email_subject'])
+                ? $context['email_subject']
+                : __('Invoice processed via automation', 'idoklad-invoice-processor'),
+            'Note' => $extracted_data['notes'] ?? '',
+            'payment_method' => $extracted_data['payment_method'] ?? '',
+            'Currency' => $currency_code,
+            'CurrencyId' => $this->map_currency_to_id($currency_code),
+            'TotalAmount' => isset($extracted_data['total_amount']) ? $this->normalize_amount($extracted_data['total_amount']) : null,
+            'Items' => $items
+        );
+
+        if (!empty($partner_data)) {
+            $payload['partner_data'] = $partner_data;
+        }
+
+        if (!empty($extracted_data['customer_name'])) {
+            $payload['customer_name'] = $extracted_data['customer_name'];
+        }
+
+        if (!empty($extracted_data['customer_vat_number'])) {
+            $payload['customer_vat_number'] = $extracted_data['customer_vat_number'];
+        }
+
+        return $payload;
+    }
+
+    private function build_idoklad_items($items, $total_amount) {
+        $normalized_items = $this->normalize_items($items);
+
+        if (!empty($normalized_items)) {
+            return array_map(function ($item) {
+                $unit_price = $item['price'] > 0 ? $item['price'] : ($item['total'] > 0 && $item['quantity'] > 0 ? $item['total'] / $item['quantity'] : 0);
+                $total = $item['total'] > 0 ? $item['total'] : ($item['quantity'] * $unit_price);
+
+                return array(
+                    'Name' => $item['name'] ?: __('Invoice item', 'idoklad-invoice-processor'),
+                    'Unit' => 'pcs',
+                    'Amount' => $item['quantity'] ?: 1,
+                    'UnitPrice' => $unit_price,
+                    'Total' => $total,
+                    'PriceType' => 1,
+                    'VatRateType' => 2,
+                    'VatRate' => 0.0,
+                    'IsTaxMovement' => false,
+                    'DiscountPercentage' => 0.0
+                );
+            }, $normalized_items);
+        }
+
+        $amount = $this->normalize_amount($total_amount);
+
+        return array(
+            array(
+                'Name' => __('Invoice total', 'idoklad-invoice-processor'),
+                'Unit' => 'pcs',
+                'Amount' => 1,
+                'UnitPrice' => $amount,
+                'Total' => $amount,
+                'PriceType' => 1,
+                'VatRateType' => 2,
+                'VatRate' => 0.0,
+                'IsTaxMovement' => false,
+                'DiscountPercentage' => 0.0
+            )
+        );
+    }
+
+    private function map_currency_to_id($currency) {
+        $map = array(
+            'CZK' => 1,
+            'EUR' => 2,
+            'USD' => 3,
+            'GBP' => 4
+        );
+
+        $currency = strtoupper((string) $currency);
+
+        return isset($map[$currency]) ? $map[$currency] : 1;
     }
     
     /**
