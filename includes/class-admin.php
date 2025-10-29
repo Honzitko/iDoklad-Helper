@@ -1592,27 +1592,55 @@ class IDokladProcessor_Admin {
             }
             
             // Check for new emails (this adds them to the queue)
-            $new_emails = $email_monitor->check_for_new_emails();
-            
+            $check_result = $email_monitor->check_for_new_emails();
+
             if (get_option('idoklad_debug_mode')) {
-                error_log('iDoklad: Found ' . $new_emails . ' new emails');
+                error_log('iDoklad: Email check result: ' . wp_json_encode($check_result));
             }
-            
+
+            $new_emails = 0;
+            $queued_attachments = 0;
+
+            if (is_array($check_result)) {
+                $new_emails = isset($check_result['emails_found']) ? (int) $check_result['emails_found'] : 0;
+                $queued_attachments = isset($check_result['queue_items_added']) ? (int) $check_result['queue_items_added'] : 0;
+            } else {
+                $new_emails = (int) $check_result;
+                $queued_attachments = $new_emails;
+                $check_result = array(
+                    'success' => true,
+                    'emails_found' => $new_emails,
+                    'queue_items_added' => $queued_attachments,
+                    'message' => ''
+                );
+            }
+
             // Process pending emails from queue
             $processed = $email_monitor->process_pending_emails();
-            
+
             if (get_option('idoklad_debug_mode')) {
                 error_log('iDoklad: Processed ' . $processed . ' items');
             }
-            
+
+            $message_parts = array();
+
+            if (!empty($check_result['message'])) {
+                $message_parts[] = $check_result['message'];
+            }
+
+            $message_parts[] = sprintf(
+                __('Found %1$d new email(s), queued %2$d attachment(s), processed %3$d item(s)', 'idoklad-invoice-processor'),
+                $new_emails,
+                $queued_attachments,
+                $processed
+            );
+
             wp_send_json_success(array(
-                'message' => sprintf(
-                    __('Found %d new email(s), processed %d item(s)', 'idoklad-invoice-processor'),
-                    $new_emails,
-                    $processed
-                ),
+                'message' => implode(' ', $message_parts),
                 'new_emails' => $new_emails,
-                'processed' => $processed
+                'queued' => $queued_attachments,
+                'processed' => $processed,
+                'details' => $check_result
             ));
             
         } catch (Exception $e) {
@@ -1875,7 +1903,6 @@ class IDokladProcessor_Admin {
                 wp_send_json_success(array(
                     'message' => $message,
                     'emails_found' => $result['emails_found'] ?? 0,
-                    'pdfs_processed' => $result['pdfs_processed'] ?? 0,
                     'queue_items_added' => $result['queue_items_added'] ?? 0
                 ));
             } else {
