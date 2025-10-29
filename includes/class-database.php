@@ -164,7 +164,7 @@ class IDokladProcessor_Database {
         global $wpdb;
         $table = $wpdb->prefix . 'idoklad_logs';
         
-        return $wpdb->insert(
+        $inserted = $wpdb->insert(
             $table,
             array(
                 'email_from' => $data['email_from'],
@@ -177,6 +177,12 @@ class IDokladProcessor_Database {
             ),
             array('%s', '%s', '%s', '%s', '%s', '%s', '%s')
         );
+
+        if (!$inserted) {
+            return false;
+        }
+
+        return (int) $wpdb->insert_id;
     }
     
     /**

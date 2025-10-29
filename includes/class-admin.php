@@ -37,8 +37,6 @@ class IDokladProcessor_Admin {
         // TODO: iDoklad payload test removed - to be rebuilt
         // add_action('wp_ajax_idoklad_test_idoklad_payload', array($this, 'test_idoklad_payload'));
         add_action('wp_ajax_idoklad_get_parsing_methods', array($this, 'get_parsing_methods'));
-        add_action('wp_ajax_idoklad_test_pdfco', array($this, 'test_pdfco_connection'));
-        add_action('wp_ajax_idoklad_test_ai_parser', array($this, 'test_ai_parser'));
         add_action('wp_ajax_idoklad_test_chatgpt_invoice', array($this, 'test_chatgpt_invoice'));
         
         // Dashboard AJAX handlers
@@ -183,17 +181,6 @@ class IDokladProcessor_Admin {
         register_setting('idoklad_email_settings', 'idoklad_email_password');
         register_setting('idoklad_email_settings', 'idoklad_email_encryption');
         
-        // Zapier settings
-        register_setting('idoklad_zapier_settings', 'idoklad_zapier_webhook_url');
-        
-        // Processing engine settings
-        register_setting('idoklad_processing_settings', 'idoklad_processing_engine');
-
-        // PDF.co settings (PRIMARY)
-        register_setting('idoklad_pdfco_settings', 'idoklad_use_pdfco');
-        register_setting('idoklad_pdfco_settings', 'idoklad_pdfco_api_key');
-        register_setting('idoklad_pdfco_settings', 'idoklad_use_ai_parser');
-
         // ChatGPT settings
         register_setting('idoklad_chatgpt_settings', 'idoklad_chatgpt_api_key');
         register_setting('idoklad_chatgpt_settings', 'idoklad_chatgpt_model');
@@ -201,23 +188,11 @@ class IDokladProcessor_Admin {
         register_setting('idoklad_chatgpt_settings', 'idoklad_openai_prompt_id');
         register_setting('idoklad_chatgpt_settings', 'idoklad_openai_prompt_version');
 
-        // PDF processing settings (FALLBACK)
-        register_setting('idoklad_pdf_settings', 'idoklad_use_native_parser_first');
-        
-        // OCR settings (LEGACY - only used if PDF.co disabled)
-        register_setting('idoklad_ocr_settings', 'idoklad_enable_ocr');
-        register_setting('idoklad_ocr_settings', 'idoklad_use_tesseract');
-        register_setting('idoklad_ocr_settings', 'idoklad_tesseract_path');
-        register_setting('idoklad_ocr_settings', 'idoklad_tesseract_lang');
-        register_setting('idoklad_ocr_settings', 'idoklad_use_cloud_ocr');
-        register_setting('idoklad_ocr_settings', 'idoklad_cloud_ocr_service');
-        register_setting('idoklad_ocr_settings', 'idoklad_ocr_space_api_key');
-        register_setting('idoklad_ocr_settings', 'idoklad_ocr_space_language');
-        register_setting('idoklad_ocr_settings', 'idoklad_google_vision_api_key');
-        
         // General settings
         register_setting('idoklad_general_settings', 'idoklad_notification_email');
         register_setting('idoklad_general_settings', 'idoklad_debug_mode');
+        register_setting('idoklad_general_settings', 'idoklad_client_id');
+        register_setting('idoklad_general_settings', 'idoklad_client_secret');
     }
     
     /**
@@ -379,132 +354,51 @@ class IDokladProcessor_Admin {
         if (!wp_verify_nonce($_POST['_wpnonce'], 'idoklad_settings_nonce')) {
             wp_die(__('Security check failed', 'idoklad-invoice-processor'));
         }
-        
-        // Save processing engine selection
-        $processing_engine = isset($_POST['processing_engine']) ? sanitize_text_field($_POST['processing_engine']) : 'pdfco';
-        if (!in_array($processing_engine, array('pdfco', 'chatgpt'), true)) {
-            $processing_engine = 'pdfco';
+
+        $fields = array(
+            'chatgpt_api_key' => 'sanitize_text_field',
+            'chatgpt_model' => 'sanitize_text_field',
+            'chatgpt_prompt' => 'sanitize_textarea_field',
+            'chatgpt_prompt_id' => 'sanitize_text_field',
+            'chatgpt_prompt_version' => 'sanitize_text_field',
+            'notification_email' => 'sanitize_email',
+            'client_id' => 'sanitize_text_field',
+            'client_secret' => 'sanitize_text_field'
+        );
+
+        foreach ($fields as $field => $callback) {
+            if (isset($_POST[$field])) {
+                $value = call_user_func($callback, $_POST[$field]);
+                update_option('idoklad_' . $field, $value);
+            }
         }
 
-        update_option('idoklad_processing_engine', $processing_engine);
-        update_option('idoklad_use_pdfco', $processing_engine === 'pdfco' ? 1 : 0);
+        $email_fields = array(
+            'email_host' => 'sanitize_text_field',
+            'email_port' => 'intval',
+            'email_username' => 'sanitize_text_field',
+            'email_password' => 'sanitize_text_field',
+            'email_encryption' => 'sanitize_text_field'
+        );
 
-        if (isset($_POST['pdfco_api_key'])) {
-            update_option('idoklad_pdfco_api_key', sanitize_text_field($_POST['pdfco_api_key']));
-        }
-
-        if (isset($_POST['use_ai_parser'])) {
-            update_option('idoklad_use_ai_parser', 1);
-        } else {
-            update_option('idoklad_use_ai_parser', 0);
-        }
-
-        if (isset($_POST['chatgpt_api_key'])) {
-            update_option('idoklad_chatgpt_api_key', sanitize_text_field($_POST['chatgpt_api_key']));
+        foreach ($email_fields as $field => $callback) {
+            if (isset($_POST[$field])) {
+                $value = call_user_func($callback, $_POST[$field]);
+                update_option('idoklad_' . $field, $value);
+            }
         }
 
-        if (isset($_POST['chatgpt_model'])) {
-            update_option('idoklad_chatgpt_model', sanitize_text_field($_POST['chatgpt_model']));
-        }
+        update_option('idoklad_processing_engine', 'chatgpt');
 
-        if (isset($_POST['chatgpt_prompt'])) {
-            update_option('idoklad_chatgpt_prompt', sanitize_textarea_field($_POST['chatgpt_prompt']));
-        }
-
-        if (isset($_POST['chatgpt_prompt_id'])) {
-            update_option('idoklad_openai_prompt_id', sanitize_text_field($_POST['chatgpt_prompt_id']));
-        }
-
-        if (isset($_POST['chatgpt_prompt_version'])) {
-            update_option('idoklad_openai_prompt_version', sanitize_text_field($_POST['chatgpt_prompt_version']));
-        }
-        
-        // Save email settings
-        if (isset($_POST['email_host'])) {
-        update_option('idoklad_email_host', sanitize_text_field($_POST['email_host']));
-        }
-        if (isset($_POST['email_port'])) {
-        update_option('idoklad_email_port', intval($_POST['email_port']));
-        }
-        if (isset($_POST['email_username'])) {
-        update_option('idoklad_email_username', sanitize_text_field($_POST['email_username']));
-        }
-        if (isset($_POST['email_password'])) {
-        update_option('idoklad_email_password', sanitize_text_field($_POST['email_password']));
-        }
-        if (isset($_POST['email_encryption'])) {
-        update_option('idoklad_email_encryption', sanitize_text_field($_POST['email_encryption']));
-        }
-        
-        // Save Zapier settings
-        if (isset($_POST['zapier_webhook_url'])) {
-            update_option('idoklad_zapier_webhook_url', esc_url_raw($_POST['zapier_webhook_url']));
-        }
-        
-        // Save PDF processing settings
-        if (isset($_POST['use_native_parser_first'])) {
-            update_option('idoklad_use_native_parser_first', 1);
-        } else {
-            update_option('idoklad_use_native_parser_first', 0);
-        }
-        
-        // Save OCR settings
-        if (isset($_POST['enable_ocr'])) {
-            update_option('idoklad_enable_ocr', 1);
-        } else {
-            update_option('idoklad_enable_ocr', 0);
-        }
-        
-        if (isset($_POST['use_tesseract'])) {
-            update_option('idoklad_use_tesseract', 1);
-        } else {
-            update_option('idoklad_use_tesseract', 0);
-        }
-        
-        if (isset($_POST['tesseract_path'])) {
-            update_option('idoklad_tesseract_path', sanitize_text_field($_POST['tesseract_path']));
-        }
-        
-        if (isset($_POST['tesseract_lang'])) {
-            update_option('idoklad_tesseract_lang', sanitize_text_field($_POST['tesseract_lang']));
-        }
-        
-        if (isset($_POST['use_cloud_ocr'])) {
-            update_option('idoklad_use_cloud_ocr', 1);
-        } else {
-            update_option('idoklad_use_cloud_ocr', 0);
-        }
-        
-        if (isset($_POST['cloud_ocr_service'])) {
-            update_option('idoklad_cloud_ocr_service', sanitize_text_field($_POST['cloud_ocr_service']));
-        }
-        
-        if (isset($_POST['ocr_space_api_key'])) {
-            update_option('idoklad_ocr_space_api_key', sanitize_text_field($_POST['ocr_space_api_key']));
-        }
-        
-        if (isset($_POST['ocr_space_language'])) {
-            update_option('idoklad_ocr_space_language', sanitize_text_field($_POST['ocr_space_language']));
-        }
-        
-        if (isset($_POST['google_vision_api_key'])) {
-            update_option('idoklad_google_vision_api_key', sanitize_text_field($_POST['google_vision_api_key']));
-        }
-        
-        // Save general settings
-        if (isset($_POST['notification_email'])) {
-        update_option('idoklad_notification_email', sanitize_email($_POST['notification_email']));
-        }
-        
         if (isset($_POST['debug_mode'])) {
             update_option('idoklad_debug_mode', 1);
         } else {
             update_option('idoklad_debug_mode', 0);
         }
-        
+
         echo '<div class="notice notice-success"><p>' . __('Settings saved successfully!', 'idoklad-invoice-processor') . '</p></div>';
     }
-    
+
     /**
      * Add authorized user with iDoklad credentials
      */
@@ -1604,58 +1498,6 @@ class IDokladProcessor_Admin {
     }
     
     /**
-     * Test PDF.co connection (AJAX)
-     */
-    public function test_pdfco_connection() {
-        check_ajax_referer('idoklad_admin_nonce', 'nonce');
-        
-        if (!current_user_can('manage_options')) {
-            wp_die(__('Insufficient permissions', 'idoklad-invoice-processor'));
-        }
-        
-        try {
-            require_once IDOKLAD_PROCESSOR_PLUGIN_DIR . 'includes/class-pdfco-processor.php';
-            $pdfco = new IDokladProcessor_PDFCoProcessor();
-            $result = $pdfco->test_connection();
-        
-        if ($result['success']) {
-                wp_send_json_success($result);
-        } else {
-            wp_send_json_error($result['message']);
-        }
-            
-        } catch (Exception $e) {
-            wp_send_json_error(__('Test failed: ', 'idoklad-invoice-processor') . $e->getMessage());
-        }
-    }
-    
-    /**
-     * Test AI Parser (AJAX)
-     */
-    public function test_ai_parser() {
-        check_ajax_referer('idoklad_admin_nonce', 'nonce');
-        
-        if (!current_user_can('manage_options')) {
-            wp_die(__('Insufficient permissions', 'idoklad-invoice-processor'));
-        }
-        
-        try {
-            require_once IDOKLAD_PROCESSOR_PLUGIN_DIR . 'includes/class-pdf-co-ai-parser.php';
-            $ai_parser = new IDokladProcessor_PDFCoAIParser();
-            $result = $ai_parser->test_connection();
-            
-            if ($result['success']) {
-                wp_send_json_success($result);
-            } else {
-                wp_send_json_error($result['message']);
-            }
-            
-        } catch (Exception $e) {
-            wp_send_json_error(__('AI Parser test failed: ', 'idoklad-invoice-processor') . $e->getMessage());
-        }
-    }
-
-    /**
      * Test ChatGPT invoice extraction (AJAX)
      */
     public function test_chatgpt_invoice() {
@@ -2475,12 +2317,6 @@ class IDokladProcessor_Admin {
             
             if (empty($client_id) || empty($client_secret)) {
                 wp_send_json_error('iDoklad API credentials not configured. Please configure them in the iDoklad Integration settings.');
-            }
-            
-            // Check if PDF.co API key is configured
-            $pdf_co_api_key = get_option('idoklad_pdfco_api_key');
-            if (empty($pdf_co_api_key)) {
-                wp_send_json_error('PDF.co API key not configured. Please configure it in the PDF.co settings.');
             }
             
             // Reset the item to pending status

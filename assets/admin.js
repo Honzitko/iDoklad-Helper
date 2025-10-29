@@ -1142,68 +1142,6 @@ jQuery(document).ready(function($) {
     
     // ===== SETTINGS PAGE =====
     
-    // Test PDF.co connection
-    $('#test-pdfco').on('click', function() {
-        var button = $(this);
-        var resultSpan = $('#pdfco-test-result');
-        
-        button.prop('disabled', true).text('Testing...');
-        resultSpan.html('');
-        
-        $.ajax({
-            url: idoklad_ajax.ajax_url,
-            type: 'POST',
-            data: {
-                action: 'idoklad_test_pdfco',
-                nonce: idoklad_ajax.nonce
-            },
-            success: function(response) {
-                if (response.success) {
-                    resultSpan.html('<span style="color: green;">✓ ' + escapeHtml(response.data.message) + '</span>');
-                } else {
-                    resultSpan.html('<span style="color: red;">✗ ' + escapeHtml(response.data) + '</span>');
-                }
-            },
-            error: function() {
-                resultSpan.html('<span style="color: red;">✗ Connection failed</span>');
-            },
-            complete: function() {
-                button.prop('disabled', false).text('Test PDF.co Connection');
-            }
-        });
-    });
-    
-    // Test AI Parser
-    $('#test-ai-parser').on('click', function() {
-        var button = $(this);
-        var resultSpan = $('#pdfco-test-result');
-        
-        button.prop('disabled', true).text('Testing AI Parser...');
-        resultSpan.html('');
-        
-        $.ajax({
-            url: idoklad_ajax.ajax_url,
-            type: 'POST',
-            data: {
-                action: 'idoklad_test_ai_parser',
-                nonce: idoklad_ajax.nonce
-            },
-            success: function(response) {
-                if (response.success) {
-                    resultSpan.html('<span style="color: green;">✓ ' + escapeHtml(response.data.message) + '</span>');
-                } else {
-                    resultSpan.html('<span style="color: red;">✗ ' + escapeHtml(response.data) + '</span>');
-                }
-            },
-            error: function() {
-                resultSpan.html('<span style="color: red;">✗ AI Parser test failed</span>');
-            },
-            complete: function() {
-                button.prop('disabled', false).text('Test AI Parser');
-            }
-        });
-    });
-    
     // ===== DASHBOARD PAGE =====
     
     // Force email check
