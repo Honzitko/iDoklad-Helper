@@ -13,7 +13,7 @@ class IDokladProcessor_ChatGPTIntegration {
     private $model;
     private $base_url = 'https://api.openai.com/v1/chat/completions';
     private $max_completion_tokens = 2000;
-    private $temperature = 0.1;
+    private $temperature = 1.0;
     private $max_pdf_size_bytes = 3145728; // 3 MB safety limit for base64 uploads
     private $last_detected_model = null;
     private $last_detected_model_was_fallback = false;
