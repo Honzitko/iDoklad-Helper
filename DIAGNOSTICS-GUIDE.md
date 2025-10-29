@@ -13,10 +13,10 @@ Go to: **WordPress Admin** → **iDoklad Processor** → **Diagnostics & Testing
 ### 1. 📄 Test PDF Parsing
 
 **What it does:**
-- Uploads a PDF and extracts text using all available methods
-- Shows which parsing method worked
-- Displays extraction time and text preview
-- Shows PDF metadata and page count
+- Uploads a PDF and extracts text through the PDF.co pipeline
+- Highlights the parsing method used
+- Displays extraction time, metadata, and a text preview
+- Captures PDF details such as page count and file size
 
 **How to use:**
 1. Click "Choose File" and select a PDF invoice
@@ -29,33 +29,33 @@ Go to: **WordPress Admin** → **iDoklad Processor** → **Diagnostics & Testing
    - ✅ Which parsing methods are available
 
 **What you'll learn:**
-- Can your server extract text from PDFs?
-- Which method works (Native PHP, pdftotext, poppler, ghostscript)?
+- Can the plugin extract text with PDF.co?
+- Are configured fallbacks available if needed?
 - How fast is the extraction?
-- Is the text quality good enough?
+- Is the extracted text accurate enough for ChatGPT?
 
 ---
 
-### 2. 🔍 Test OCR (Scanned PDFs)
+### 2. 🤖 Test ChatGPT Extraction
 
 **What it does:**
-- Tests OCR on scanned/image-based PDFs
-- Shows which OCR methods are available
-- Displays OCR processing time
+- Validates the AI extraction pipeline using PDF.co + ChatGPT
+- Accepts either an uploaded PDF or pasted invoice text
+- Displays the structured JSON returned by the AI model
 
 **How to use:**
-1. Upload a scanned PDF (image-based invoice)
-2. Click "Test OCR"
-3. View results:
-   - Text extracted from images
-   - OCR processing time
-   - Available OCR methods (Tesseract, OCR.space, Google Vision)
+1. (Optional) Upload a PDF invoice to trigger PDF.co parsing
+2. (Optional) Paste existing invoice text into the textarea
+3. Click "Run ChatGPT Extraction"
+4. Review results:
+   - ✅ Structured JSON payload (invoice data)
+   - 🧾 Extracted text preview
+   - ⏱️ Processing time and model details
 
 **What you'll learn:**
-- Is OCR configured correctly?
-- Which OCR service is working?
-- How long does OCR take?
-- Is OCR.space API key valid?
+- Does the AI pipeline return usable data?
+- Are mandatory invoice fields present before sending to iDoklad?
+- How long does the end-to-end extraction take?
 
 ---
 
@@ -119,8 +119,8 @@ You can test the entire pipeline step-by-step:
 ```
 1. Upload PDF → Test PDF Parsing
    ↓ (Copy text)
-2. Paste → Test Zapier Webhook
-   ↓ (Copy response)
+2. Paste → Test ChatGPT Extraction
+   ↓ (Copy JSON)
 3. Paste → Test iDoklad API
    ✓ Invoice created!
 ```
@@ -132,14 +132,13 @@ You can test the entire pipeline step-by-step:
    - Click "Test PDF Parsing"
    - See: "1,234 characters extracted in 45ms"
    
-2. **Test Zapier**
-   - Click "Copy from PDF Test Above"
-   - Click "Send to Zapier"
-   - See: Zapier returns structured JSON with invoice data
-   
+2. **Test ChatGPT Extraction**
+   - Click "Run ChatGPT Extraction"
+   - See: Structured JSON with invoice data
+
 3. **Test iDoklad**
    - Select user: "supplier@example.com"
-   - Click "Copy from Zapier Response"
+   - Paste JSON from ChatGPT results
    - Click "Send to iDoklad"
    - See: Invoice created successfully!
 
@@ -154,19 +153,14 @@ Click "Check Available Methods" to see what's available on your server:
 
 Example output:
 ```
-✓ Native PHP Parser - Pure PHP implementation
-✗ pdftotext - Command-line tool not installed
-✓ OCR.space - Cloud OCR service (API configured)
-✗ Tesseract - Local OCR not installed
+✓ PDF.co AI Parser - Cloud extraction ready
+✓ ChatGPT Validation - AI pipeline configured
+✗ Legacy CLI Parsers - Not installed (not required)
 ```
 
 ### Current Settings
 
-Shows your active configuration:
-- Native Parser: ✓ Yes / ✗ No
-- OCR Enabled: ✓ Yes / ✗ No
-- Cloud OCR: ✓ Yes / ✗ No
-- OCR Service: ocr_space / google_vision / none
+Shows quick status for key options:
 - Zapier URL: ✓ Set / ✗ Not set
 
 ## 💡 Testing Tips
@@ -179,12 +173,12 @@ Test with actual PDF invoices you'll be processing, not random PDFs.
 
 ### 3. **Check Processing Time**
 - PDF parsing: Should be < 100ms
-- OCR: Can take 2-10 seconds (cloud APIs)
+- ChatGPT extraction: Typically 2-5 seconds
 - Zapier: Usually < 2 seconds
 - iDoklad: Usually < 1 second
 
-### 4. **Test Scanned PDFs Separately**
-If you process scanned invoices, test OCR specifically.
+### 4. **Review AI Output**
+Confirm the ChatGPT JSON includes invoice number, totals, supplier, and line items before sending to iDoklad.
 
 ### 5. **Verify Data Structure**
 Check that Zapier returns the correct JSON structure that iDoklad expects.
@@ -196,7 +190,7 @@ Each user has different iDoklad credentials - test them all!
 
 ### "Failed to parse PDF"
 - **Cause:** PDF is encrypted, corrupted, or image-based
-- **Solution:** Try OCR test if it's scanned
+- **Solution:** Verify the PDF.co API response and retry the ChatGPT extraction test
 
 ### "No PDF file uploaded"
 - **Cause:** File input empty
@@ -213,10 +207,6 @@ Each user has different iDoklad credentials - test them all!
 ### "Invalid JSON format"
 - **Cause:** Syntax error in JSON
 - **Solution:** Use a JSON validator online
-
-### "OCR failed"
-- **Cause:** OCR.space API key invalid
-- **Solution:** Check Settings → OCR Settings
 
 ## 📊 Understanding Results
 
@@ -236,13 +226,13 @@ Dodavatel: ABC s.r.o.
 ...
 
 Parsing Methods Tested:
-✓ Native PHP Parser - Available
-✗ pdftotext - Unavailable
+✓ PDF.co AI Parser - Available
+✗ Legacy CLI Parsers - Unavailable (not required)
 ```
 
 **What this means:**
 - Text extraction successful
-- Native PHP parser worked
+- PDF.co handled the parsing
 - Took 45 milliseconds
 - 1,234 characters extracted from 2 pages
 
@@ -281,8 +271,8 @@ Zapier Response:
 Once all tests pass:
 
 1. ✅ PDF parsing works → Enable email monitoring
-2. ✅ OCR works → Enable OCR in settings for scanned PDFs
-3. ✅ Zapier works → Set up your Zap to extract invoice data
+2. ✅ ChatGPT extraction works → Use AI output as source data
+3. ✅ Zapier works → Set up your Zap to extract invoice data (optional)
 4. ✅ iDoklad works → Add all users with valid credentials
 5. ✅ Everything works → Send a real test email!
 

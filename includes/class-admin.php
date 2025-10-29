@@ -25,14 +25,12 @@ class IDokladProcessor_Admin {
         add_action('wp_ajax_idoklad_update_user', array($this, 'update_user'));
         add_action('wp_ajax_idoklad_get_chatgpt_models', array($this, 'get_chatgpt_models'));
         add_action('wp_ajax_idoklad_test_zapier_webhook', array($this, 'test_zapier_webhook'));
-        add_action('wp_ajax_idoklad_test_ocr_space', array($this, 'test_ocr_space_connection'));
         add_action('wp_ajax_idoklad_get_queue_details', array($this, 'get_queue_details'));
         add_action('wp_ajax_idoklad_refresh_queue', array($this, 'refresh_queue'));
         add_action('wp_ajax_idoklad_reset_stuck_items', array($this, 'reset_stuck_items'));
         
         // Diagnostics AJAX handlers
         add_action('wp_ajax_idoklad_test_pdf_parsing', array($this, 'test_pdf_parsing'));
-        add_action('wp_ajax_idoklad_test_ocr_on_pdf', array($this, 'test_ocr_on_pdf'));
         add_action('wp_ajax_idoklad_test_zapier_payload', array($this, 'test_zapier_payload'));
         // TODO: iDoklad payload test removed - to be rebuilt
         // add_action('wp_ajax_idoklad_test_idoklad_payload', array($this, 'test_idoklad_payload'));
@@ -910,157 +908,6 @@ class IDokladProcessor_Admin {
         wp_send_json_error('Zapier testing is deprecated. The system now uses direct PDF text parsing with PDF.co.');
     }
     
-    /**
-     * Test OCR.space API connection
-     */
-    public function test_ocr_space_connection() {
-        check_ajax_referer('idoklad_admin_nonce', 'nonce');
-        
-        if (!current_user_can('manage_options')) {
-            wp_die(__('Insufficient permissions', 'idoklad-invoice-processor'));
-        }
-        
-        // Check API key
-        $api_key = get_option('idoklad_ocr_space_api_key');
-        if (empty($api_key)) {
-            wp_send_json_error(__('OCR.space API key is not configured', 'idoklad-invoice-processor'));
-            return;
-        }
-        
-        // Check cloud OCR is enabled
-        $use_cloud_ocr = get_option('idoklad_use_cloud_ocr');
-        if (!$use_cloud_ocr) {
-            wp_send_json_error(__('Cloud OCR is not enabled. Please check "Use Cloud OCR" checkbox and save settings.', 'idoklad-invoice-processor'));
-            return;
-        }
-        
-        // Check OCR.space is selected
-        $cloud_service = get_option('idoklad_cloud_ocr_service');
-        if ($cloud_service !== 'ocr_space') {
-            wp_send_json_error(__('OCR.space is not selected as cloud service. Please select "OCR.space" from dropdown and save settings.', 'idoklad-invoice-processor'));
-            return;
-        }
-        
-        // Create a simple test image with text
-        $test_image = $this->create_test_image();
-        
-        if (!$test_image) {
-            wp_send_json_error(__('Could not create test image. GD library may not be available.', 'idoklad-invoice-processor'));
-            return;
-        }
-        
-        // OCR.space is no longer used - PDF.co handles OCR
-        wp_send_json_error('OCR.space testing is deprecated. PDF.co handles all OCR automatically.');
-        return;
-        
-        try {
-            // Test OCR.space API directly
-            $url = 'https://api.ocr.space/parse/image';
-            
-            $image_data = file_get_contents($test_image);
-            
-            // Use simple POST method for testing
-            // No language parameter = auto-detect (works best with Engine 2)
-            $post_data = array(
-                'base64Image' => 'data:image/png;base64,' . base64_encode($image_data),
-                'OCREngine' => '2'
-            );
-            
-            $args = array(
-                'headers' => array(
-                    'apikey' => $api_key,
-                    'Content-Type' => 'application/x-www-form-urlencoded'
-                ),
-                'body' => $post_data,
-                'timeout' => 30,
-                'method' => 'POST'
-            );
-            
-            $response = wp_remote_request($url, $args);
-            
-            // Clean up test image
-            @unlink($test_image);
-            
-            // Check for errors
-            if (is_wp_error($response)) {
-                wp_send_json_error(__('Network error: ', 'idoklad-invoice-processor') . $response->get_error_message());
-                return;
-            }
-            
-            $response_code = wp_remote_retrieve_response_code($response);
-            $response_body = wp_remote_retrieve_body($response);
-            
-            if ($response_code !== 200) {
-                wp_send_json_error(__('HTTP error ', 'idoklad-invoice-processor') . $response_code . ': ' . substr($response_body, 0, 200));
-                return;
-            }
-            
-            $data = json_decode($response_body, true);
-            
-            if (!$data) {
-                wp_send_json_error(__('Invalid JSON response from OCR.space', 'idoklad-invoice-processor'));
-                return;
-            }
-            
-            // Check for API errors
-            if (isset($data['IsErroredOnProcessing']) && $data['IsErroredOnProcessing'] === true) {
-                $error_msg = isset($data['ErrorMessage'][0]) ? $data['ErrorMessage'][0] : 'Unknown error';
-                wp_send_json_error(__('OCR.space API error: ', 'idoklad-invoice-processor') . $error_msg);
-                return;
-            }
-            
-            // Check if text was extracted
-            if (isset($data['ParsedResults'][0]['ParsedText'])) {
-                $text = $data['ParsedResults'][0]['ParsedText'];
-                
-                if (!empty($text)) {
-                    wp_send_json_success(__('✓ OCR.space connection successful! API key is valid. Extracted text: ', 'idoklad-invoice-processor') . '"' . substr($text, 0, 50) . '"');
-                } else {
-                    wp_send_json_success(__('✓ OCR.space API key is valid, but no text was extracted from test image. This is okay - it will work with real invoices.', 'idoklad-invoice-processor'));
-                }
-            } else {
-                // API worked but no parsed text - still a success
-                wp_send_json_success(__('✓ OCR.space API key is valid and connection successful!', 'idoklad-invoice-processor'));
-            }
-            
-        } catch (Exception $e) {
-            wp_send_json_error(__('Test failed: ', 'idoklad-invoice-processor') . $e->getMessage());
-        }
-    }
-    
-    /**
-     * Create a test image for OCR testing
-     */
-    private function create_test_image() {
-        // Check if GD library is available
-        if (!function_exists('imagecreate')) {
-            return false;
-        }
-        
-        // Create a simple image with text
-        $width = 400;
-        $height = 100;
-        $image = imagecreate($width, $height);
-        
-        if (!$image) {
-            return false;
-        }
-        
-        // Colors
-        $background = imagecolorallocate($image, 255, 255, 255); // White
-        $text_color = imagecolorallocate($image, 0, 0, 0); // Black
-        
-        // Add text
-        $text = 'OCR TEST INVOICE 12345';
-        imagestring($image, 5, 50, 40, $text, $text_color);
-        
-        // Save to temp file
-        $temp_file = sys_get_temp_dir() . '/ocr_test_' . uniqid() . '.png';
-        imagepng($image, $temp_file);
-        imagedestroy($image);
-        
-        return $temp_file;
-    }
     
     /**
      * Get queue item details (AJAX)
@@ -1195,19 +1042,6 @@ class IDokladProcessor_Admin {
         ));
     }
 
-    /**
-     * Test OCR on PDF (AJAX)
-     */
-    public function test_ocr_on_pdf() {
-        check_ajax_referer('idoklad_admin_nonce', 'nonce');
-
-        if (!current_user_can('manage_options')) {
-            wp_die(__('Insufficient permissions', 'idoklad-invoice-processor'));
-        }
-
-        wp_send_json_error(__('OCR testing has been removed. ChatGPT now handles extraction directly from uploaded PDFs.', 'idoklad-invoice-processor'));
-    }
-    
     /**
      * Test Zapier with payload (AJAX)
      */

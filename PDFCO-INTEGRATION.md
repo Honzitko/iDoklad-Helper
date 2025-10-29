@@ -51,7 +51,7 @@ PDF.co is now the **PRIMARY PDF processing method** for the iDoklad Invoice Proc
 **Admin Settings**:
 - Added PDF.co settings registration
 - Added AJAX test endpoint
-- Priority ordering: PDF.co > Native Parser > Other methods
+- PDF.co now handles all parsing (legacy fallbacks removed)
 
 ## 🔑 Getting an API Key
 
@@ -99,11 +99,7 @@ Upload PDF → PDF.co → Extract text →
 Check length → If < 100 chars → OCR → Return text
 ```
 
-### 3. Fallback (PDF.co fails):
-```
-PDF.co fails → Native Parser → pdftotext → 
-poppler → ghostscript → Legacy OCR
-```
+> **Note:** If PDF.co cannot process the file, the queue records the failure and surfaces the API response. No legacy fallbacks are executed.
 
 ## 📊 Queue Logging
 
@@ -120,7 +116,7 @@ Or on failure:
 ```
 PDF Processing: Using PDF.co cloud service
 PDF.co: Extraction failed (API key invalid)
-PDF Parsing: Trying native PHP parser
+PDF Processing: Aborting after PDF.co failure
 ```
 
 ## 🧪 Testing
@@ -248,10 +244,7 @@ Content-Type: application/json
 **Solutions:**
 1. Check dashboard at pdf.co
 2. Upgrade plan or wait for monthly reset
-3. Temporarily disable PDF.co to use fallback methods
-
-### "PDF.co failed, will try fallback methods"
-**This is normal!** The plugin automatically falls back to other methods if PDF.co fails.
+3. Temporarily disable email processing until credits replenish
 
 ### Low quality OCR results
 **Solutions:**
@@ -274,19 +267,14 @@ Content-Type: application/json
 | Method | Speed | Quality | Dependencies |
 |--------|-------|---------|--------------|
 | **PDF.co** | ⚡⚡⚡ | ⭐⭐⭐⭐⭐ | None (cloud) |
-| Native Parser | ⚡⚡⚡⚡⚡ | ⭐⭐⭐ | None |
-| pdftotext | ⚡⚡⚡⚡ | ⭐⭐⭐⭐ | poppler-utils |
-| OCR.space | ⚡⚡ | ⭐⭐⭐ | None (cloud) |
-| Tesseract | ⚡⚡ | ⭐⭐⭐⭐ | tesseract, imagemagick |
 
 ## 💡 Best Practices
 
 1. **Always test connection** after entering API key
 2. **Monitor credit usage** in PDF.co dashboard
-3. **Keep fallback methods** enabled (automatic)
-4. **Use Debug Mode** during initial setup
-5. **Test with real invoices** before going live
-6. **Check monthly credit reset** date
+3. **Use Debug Mode** during initial setup
+4. **Test with real invoices** before going live
+5. **Check monthly credit reset** date
 
 ## 🔄 Disabling PDF.co
 
@@ -295,7 +283,7 @@ If you want to use other methods instead:
 1. Go to **Settings → PDF.co**
 2. Uncheck **"Enable PDF.co"**
 3. Save settings
-4. Plugin will use fallback methods (Native Parser, etc.)
+4. Plugin will pause automated parsing until an alternative is configured
 
 ## 📚 Links
 
@@ -313,7 +301,6 @@ PDF.co integration is now complete and functional:
 - ✅ Settings added to admin panel
 - ✅ AJAX test endpoint created
 - ✅ Automatic OCR detection
-- ✅ Fallback to other methods if fails
 - ✅ Queue logging implemented
 - ✅ Default enabled with empty API key
 

@@ -55,7 +55,6 @@
 /* Test connection buttons */
 #email-test-result,
 #chatgpt-test-result,
-#ocr-space-test-result,
 #zapier-test-result {
     margin-left: 10px;
     font-weight: bold;
@@ -63,14 +62,12 @@
 
 #email-test-result .success,
 #chatgpt-test-result .success,
-#ocr-space-test-result .success,
 #zapier-test-result .success {
     color: #46b450;
 }
 
 #email-test-result .error,
 #chatgpt-test-result .error,
-#ocr-space-test-result .error,
 #zapier-test-result .error {
     color: #dc3232;
 }

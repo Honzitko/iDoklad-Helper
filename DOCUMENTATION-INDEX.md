@@ -7,7 +7,6 @@ This index provides a comprehensive overview of all documentation files in the i
 ### Essential Reading
 - **[README.md](README.md)** - Complete plugin overview and quick start guide
 - **[CHANGELOG.md](CHANGELOG.md)** - Complete change history and version information
-- **[OPERATION-GUIDE.md](OPERATION-GUIDE.md)** - Detailed operation guide for daily use
 
 ### API Integration Documentation
 - **[IDOKLAD-API-INTEGRATION.md](IDOKLAD-API-INTEGRATION.md)** - Complete iDoklad API v3 integration guide
@@ -16,13 +15,11 @@ This index provides a comprehensive overview of all documentation files in the i
 ## 📋 Feature Documentation
 
 ### Core Features
-- **[COMPLETE-FEATURE-SUMMARY.md](COMPLETE-FEATURE-SUMMARY.md)** - Complete feature overview
 - **[ENHANCED-SYSTEM-OVERVIEW.md](ENHANCED-SYSTEM-OVERVIEW.md)** - System architecture overview
 - **[DASHBOARD-FEATURES.md](DASHBOARD-FEATURES.md)** - Admin dashboard features
 
 ### Processing Features
 - **[DATA-TRANSFORMER-GUIDE.md](DATA-TRANSFORMER-GUIDE.md)** - Data transformation guide
-- **[PDF-PARSER-README.md](PDF-PARSER-README.md)** - PDF parsing documentation
 - **[QUEUE-VIEWER-GUIDE.md](QUEUE-VIEWER-GUIDE.md)** - Queue management guide
 
 ## 🔧 Technical Documentation
@@ -34,17 +31,13 @@ This index provides a comprehensive overview of all documentation files in the i
 
 ### Integration Guides
 - **[PDFCO-INTEGRATION.md](PDFCO-INTEGRATION.md)** - PDF.co integration guide
-- **[INTEGRATION-COMPLETE.md](INTEGRATION-COMPLETE.md)** - Complete integration guide
 
 ## 🛠️ Setup and Configuration
 
 ### Installation Guides
-- **[INSTALL-OCR.md](INSTALL-OCR.md)** - OCR installation guide
-- **[OCR-SPACE-SETUP.md](OCR-SPACE-SETUP.md)** - OCR Space setup guide
 - **[SETTINGS-CLEANUP.md](SETTINGS-CLEANUP.md)** - Settings cleanup guide
 
 ### Configuration Guides
-- **[OCR-README.md](OCR-README.md)** - OCR configuration guide
 - **[PRECISE-DATA-HANDLING.md](PRECISE-DATA-HANDLING.md)** - Data handling guide
 
 ## 🚨 Troubleshooting and Fixes
@@ -61,8 +54,6 @@ This index provides a comprehensive overview of all documentation files in the i
 - **[PDFCO-FIX.md](PDFCO-FIX.md)** - PDF.co fixes
 
 ### Change Documentation
-- **[CHANGELOG-NATIVE-PARSER.md](CHANGELOG-NATIVE-PARSER.md)** - Native parser changelog
-- **[FEATURE-SUMMARY.md](FEATURE-SUMMARY.md)** - Feature summary
 
 ## 🔍 Testing and Debugging
 
@@ -87,29 +78,21 @@ includes/
 ├── class-chatgpt-integration.php      # ChatGPT integration
 ├── class-database.php                 # Database management
 ├── class-email-monitor.php            # Email monitoring
-├── class-email-monitor-v3.php         # Enhanced email monitoring
 ├── class-idoklad-admin-integration.php # iDoklad admin integration
 ├── class-idoklad-api-v3-integration.php # iDoklad API v3 integration
+├── class-invoice-ai-rest.php          # REST endpoints
 ├── class-logger.php                   # Logging system
 ├── class-notification.php             # Notification system
-├── class-notification-v3.php          # Enhanced notifications
-├── class-pdf-co-admin-debug.php       # PDF.co debug interface
-├── class-pdf-co-ai-parser.php         # PDF.co AI parser
-├── class-pdf-co-ai-parser-enhanced.php # Enhanced PDF.co parser
-├── class-pdf-parser-native.php        # Native PDF parser
-├── class-pdf-processor.php            # PDF processor
-├── class-pdfco-processor.php          # PDF.co processor
-├── class-user-manager.php             # User management
-└── class-user-manager-v3.php          # Enhanced user management
+└── class-user-manager.php             # User management
 ```
 
 ### Templates Directory
 ```
 templates/
 ├── admin-dashboard.php                # Admin dashboard
-├── admin-dashboard-v3.php             # Enhanced dashboard
 ├── admin-database.php                 # Database management
 ├── admin-diagnostics.php              # Diagnostics page
+├── admin-email-processing.php         # Email processing controls
 ├── admin-logs.php                     # Logs page
 ├── admin-queue.php                    # Queue management
 ├── admin-settings.php                 # Settings page
@@ -131,7 +114,7 @@ assets/
 
 ### For New Users
 1. **README.md** - Start here for overview
-2. **OPERATION-GUIDE.md** - Learn how to operate the plugin
+2. **DASHBOARD-FEATURES.md** - Learn how to operate the plugin
 3. **TROUBLESHOOTING.md** - Common issues and solutions
 
 ### For Developers
@@ -140,9 +123,9 @@ assets/
 3. **PDF-CO-AI-PARSER-ENHANCEMENT.md** - PDF parsing details
 
 ### For Administrators
-1. **OPERATION-GUIDE.md** - Daily operations
-2. **DASHBOARD-FEATURES.md** - Admin interface features
-3. **DIAGNOSTICS-GUIDE.md** - Testing and debugging
+1. **DASHBOARD-FEATURES.md** - Daily operations
+2. **DIAGNOSTICS-GUIDE.md** - Testing and debugging
+3. **SETTINGS-CLEANUP.md** - Configuration reference
 
 ### For Troubleshooting
 1. **TROUBLESHOOTING.md** - Common issues
