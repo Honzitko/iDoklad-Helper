@@ -398,7 +398,12 @@ class IDokladProcessor_Admin {
                 return new WP_Error('idoklad_invalid_model', __('Selected ChatGPT model is not available.', 'idoklad-invoice-processor'));
             }
 
-            update_option('idoklad_' . $field, $value);
+            $option_name_overrides = array(
+                'chatgpt_prompt_id' => 'idoklad_openai_prompt_id',
+                'chatgpt_prompt_version' => 'idoklad_openai_prompt_version',
+            );
+            $option_name = isset($option_name_overrides[$field]) ? $option_name_overrides[$field] : 'idoklad_' . $field;
+            update_option($option_name, $value);
 
             if ($field === 'chatgpt_model') {
                 update_option('idoklad_chatgpt_model_manual', 1);
