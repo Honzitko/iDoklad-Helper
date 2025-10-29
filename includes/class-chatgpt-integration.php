@@ -14,6 +14,7 @@ class IDokladProcessor_ChatGPTIntegration {
     private $base_url = 'https://api.openai.com/v1/chat/completions';
     private $max_tokens = 2000;
     private $temperature = 0.1;
+    private $max_pdf_size_bytes = 3145728; // 3 MB safety limit for base64 uploads
     
     public function __construct() {
         $this->api_key = get_option('idoklad_chatgpt_api_key');
@@ -21,36 +22,97 @@ class IDokladProcessor_ChatGPTIntegration {
     }
     
     /**
-     * Extract invoice data from PDF text
+     * Backwards compatible wrapper for text-based extraction.
      */
-    public function extract_invoice_data($pdf_text) {
+    public function extract_invoice_data($pdf_text, $context = array()) {
+        return $this->extract_invoice_data_from_text($pdf_text, $context);
+    }
+
+    /**
+     * Extract invoice data when raw text is available.
+     */
+    public function extract_invoice_data_from_text($pdf_text, $context = array()) {
         if (empty($this->api_key)) {
             throw new Exception('ChatGPT API key is not configured');
         }
-        
+
         if (get_option('idoklad_debug_mode')) {
-            error_log('iDoklad ChatGPT: Extracting invoice data from PDF text');
+            error_log('iDoklad ChatGPT: Extracting invoice data from provided text');
         }
-        
-        $prompt = $this->build_extraction_prompt($pdf_text);
-        
+
+        $prompt = $this->build_extraction_prompt($pdf_text, $context);
+
         try {
             $response = $this->make_api_request($prompt);
-            
+
             if (!$response) {
                 throw new Exception('No response from ChatGPT API');
             }
-            
+
             $extracted_data = $this->parse_response($response);
-            
+
             if (get_option('idoklad_debug_mode')) {
                 error_log('iDoklad ChatGPT: Extracted data: ' . json_encode($extracted_data));
             }
-            
+
             return $extracted_data;
-            
+
         } catch (Exception $e) {
             error_log('iDoklad ChatGPT Error: ' . $e->getMessage());
+            throw $e;
+        }
+    }
+
+    /**
+     * Extract invoice data directly from a PDF file by sending a base64 payload to ChatGPT.
+     */
+    public function extract_invoice_data_from_pdf($pdf_path, $context = array()) {
+        if (empty($this->api_key)) {
+            throw new Exception('ChatGPT API key is not configured');
+        }
+
+        if (empty($pdf_path) || !file_exists($pdf_path)) {
+            throw new Exception('PDF file not found for ChatGPT extraction');
+        }
+
+        $file_size = filesize($pdf_path);
+        if ($file_size === false) {
+            throw new Exception('Unable to determine PDF file size');
+        }
+
+        if ($file_size > $this->max_pdf_size_bytes) {
+            throw new Exception('PDF file is too large for ChatGPT processing (max ' . round($this->max_pdf_size_bytes / 1024 / 1024, 2) . ' MB)');
+        }
+
+        if (get_option('idoklad_debug_mode')) {
+            error_log(sprintf('iDoklad ChatGPT: Preparing base64 payload for %s (%d bytes)', basename($pdf_path), $file_size));
+        }
+
+        $pdf_contents = file_get_contents($pdf_path);
+        if ($pdf_contents === false) {
+            throw new Exception('Unable to read PDF file for ChatGPT extraction');
+        }
+
+        $base64 = base64_encode($pdf_contents);
+        $prompt = $this->build_pdf_prompt($base64, $context);
+
+        try {
+            $response = $this->make_api_request($prompt);
+
+            if (!$response) {
+                throw new Exception('No response from ChatGPT API');
+            }
+
+            $extracted_data = $this->parse_response($response);
+
+            if (get_option('idoklad_debug_mode')) {
+                error_log('iDoklad ChatGPT: Extracted data (PDF): ' . json_encode($extracted_data));
+            }
+
+            return $extracted_data;
+
+        } catch (Exception $e) {
+            error_log('iDoklad ChatGPT Error (PDF): ' . $e->getMessage());
             throw $e;
         }
     }
@@ -58,18 +120,73 @@ class IDokladProcessor_ChatGPTIntegration {
     /**
      * Build extraction prompt
      */
-    private function build_extraction_prompt($pdf_text) {
+    private function build_extraction_prompt($pdf_text, $context = array()) {
         $base_prompt = get_option('idoklad_chatgpt_prompt', 'Extract invoice data from this PDF. Return JSON with: invoice_number, date, total_amount, supplier_name, supplier_vat_number, items (array with name, quantity, price), currency. Validate data completeness.');
-        
+
+        $context_summary = $this->summarize_context($context);
+
         // Truncate PDF text if too long (ChatGPT has token limits)
         $max_text_length = 8000; // Approximate token limit consideration
         if (strlen($pdf_text) > $max_text_length) {
             $pdf_text = substr($pdf_text ?: '', 0, $max_text_length) . '... [truncated]';
         }
-        
-        $prompt = $base_prompt . "\n\nPDF Content:\n" . $pdf_text . "\n\nPlease return only valid JSON without any additional text or formatting.";
-        
+
+        $prompt = $base_prompt;
+
+        if (!empty($context_summary)) {
+            $prompt .= "\n\nContext:\n" . $context_summary;
+        }
+
+        $prompt .= "\n\nInvoice Text:\n" . $pdf_text . "\n\nPlease return only valid JSON without any additional text or formatting.";
+
         return $prompt;
+    }
+
+    private function build_pdf_prompt($base64, $context = array()) {
+        $base_prompt = get_option('idoklad_chatgpt_prompt', 'Extract invoice data from this PDF. Return JSON with: invoice_number, date, total_amount, supplier_name, supplier_vat_number, items (array with name, quantity, price), currency. Validate data completeness.');
+
+        $context_summary = $this->summarize_context($context);
+
+        $prompt = $base_prompt;
+
+        if (!empty($context_summary)) {
+            $prompt .= "\n\nContext:\n" . $context_summary;
+        }
+
+        $prompt .= "\n\nThe invoice file is provided below as base64-encoded PDF data. Decode the content, analyse the document and return structured JSON with the requested fields. If decoding fails, explain why in a `warnings` array.";
+
+        $prompt .= "\n\nBase64PDF:\n" . chunk_split($base64, 120);
+
+        $prompt .= "\n\nReturn only valid JSON without extra commentary.";
+
+        return $prompt;
+    }
+
+    private function summarize_context($context) {
+        if (empty($context) || !is_array($context)) {
+            return '';
+        }
+
+        $parts = array();
+
+        $map = array(
+            'file_name' => 'File name',
+            'email_from' => 'Email from',
+            'email_subject' => 'Email subject',
+            'queue_id' => 'Queue ID',
+        );
+
+        foreach ($map as $key => $label) {
+            if (!empty($context[$key])) {
+                $parts[] = $label . ': ' . $context[$key];
+            }
+        }
+
+        if (empty($parts)) {
+            return '';
+        }
+
+        return implode("\n", $parts);
     }
     
     /**

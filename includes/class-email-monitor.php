@@ -86,7 +86,6 @@ class IDokladProcessor_EmailMonitor {
             $batch_size = 5;
         }
 
-        $pdf_processor = new IDokladProcessor_PDFProcessor();
         $chatgpt = new IDokladProcessor_ChatGPTIntegration();
         $client_id = get_option('idoklad_client_id');
         $client_secret = get_option('idoklad_client_secret');
@@ -135,21 +134,24 @@ class IDokladProcessor_EmailMonitor {
                         throw new Exception('Attachment file is missing or inaccessible');
                     }
 
-                    $pdf_text = $pdf_processor->extract_text($attachment_path, array(
-                        'queue_id' => $item_id,
-                        'email_from' => $item->email_from,
-                    ));
-
-                    if (empty($pdf_text)) {
-                        throw new Exception('No text could be extracted from PDF');
+                    $file_size = filesize($attachment_path);
+                    if ($file_size === false) {
+                        throw new Exception('Unable to determine PDF size');
                     }
 
-                    IDokladProcessor_Database::add_queue_step($item_id, 'PDF text extracted', array(
-                        'characters' => strlen($pdf_text),
-                        'attachment' => $this->get_queue_attachment_name($item),
+                    $attachment_name = $this->get_queue_attachment_name($item);
+
+                    IDokladProcessor_Database::add_queue_step($item_id, 'ChatGPT extraction started', array(
+                        'attachment' => $attachment_name,
+                        'filesize' => $file_size,
                     ));
 
-                    $parsed_data = $chatgpt->extract_invoice_data($pdf_text);
+                    $parsed_data = $chatgpt->extract_invoice_data_from_pdf($attachment_path, array(
+                        'email_from' => $item->email_from,
+                        'email_subject' => $item->email_subject,
+                        'queue_id' => $item_id,
+                        'file_name' => $attachment_name,
+                    ));
 
                     IDokladProcessor_Database::add_queue_step($item_id, 'ChatGPT extraction complete', $this->summarize_chatgpt_output($parsed_data));
 
