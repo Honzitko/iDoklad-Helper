@@ -198,6 +198,7 @@ class IDokladProcessor_ChatGPTIntegration {
         // Optional fields
         $normalized['supplier_vat_number'] = isset($data['supplier_vat_number']) ? trim($data['supplier_vat_number']) : '';
         $normalized['currency'] = isset($data['currency']) ? strtoupper(trim($data['currency'])) : 'CZK';
+        $normalized['variable_symbol'] = $this->extract_variable_symbol($data);
         $normalized['items'] = isset($data['items']) && is_array($data['items']) ? $this->normalize_items($data['items']) : array();
         
         // Additional fields that might be useful
@@ -206,8 +207,23 @@ class IDokladProcessor_ChatGPTIntegration {
         $normalized['due_date'] = isset($data['due_date']) ? $this->normalize_date($data['due_date']) : '';
         $normalized['payment_method'] = isset($data['payment_method']) ? trim($data['payment_method']) : '';
         $normalized['notes'] = isset($data['notes']) ? trim($data['notes']) : '';
-        
+
         return $normalized;
+    }
+
+    private function extract_variable_symbol($data) {
+        $candidates = array('variable_symbol', 'VariableSymbol', 'variableSymbol', 'vs', 'VS');
+
+        foreach ($candidates as $key) {
+            if (isset($data[$key]) && $data[$key] !== '') {
+                $normalized = $this->normalize_variable_symbol($data[$key]);
+                if ($normalized !== '') {
+                    return $normalized;
+                }
+            }
+        }
+
+        return '';
     }
     
     /**
@@ -248,6 +264,20 @@ class IDokladProcessor_ChatGPTIntegration {
         }
         
         return floatval($amount);
+    }
+
+    private function normalize_variable_symbol($value) {
+        $value = preg_replace('/[^0-9]/', '', (string) $value);
+
+        if ($value === '') {
+            return '';
+        }
+
+        if (strlen($value) > 10) {
+            $value = substr($value, 0, 10);
+        }
+
+        return $value;
     }
     
     /**
@@ -294,6 +324,10 @@ class IDokladProcessor_ChatGPTIntegration {
             ? $extracted_data['invoice_number']
             : 'AI-' . date('YmdHis');
 
+        $variable_symbol = !empty($extracted_data['variable_symbol'])
+            ? $extracted_data['variable_symbol']
+            : $this->normalize_variable_symbol($document_number);
+
         $currency_code = !empty($extracted_data['currency']) ? strtoupper($extracted_data['currency']) : 'CZK';
 
         $items = $this->build_idoklad_items(
@@ -325,6 +359,10 @@ class IDokladProcessor_ChatGPTIntegration {
             'TotalAmount' => isset($extracted_data['total_amount']) ? $this->normalize_amount($extracted_data['total_amount']) : null,
             'Items' => $items
         );
+
+        if (!empty($variable_symbol)) {
+            $payload['VariableSymbol'] = $variable_symbol;
+        }
 
         if (!empty($partner_data)) {
             $payload['partner_data'] = $partner_data;
