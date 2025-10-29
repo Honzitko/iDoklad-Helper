@@ -16,6 +16,7 @@ class IDokladProcessor_EmailMonitor {
     private $encryption;
     private $connection;
     private $last_check_result = array();
+    private $logger;
 
     public function __construct() {
         $this->host = get_option('idoklad_email_host');
@@ -23,6 +24,10 @@ class IDokladProcessor_EmailMonitor {
         $this->username = get_option('idoklad_email_username');
         $this->password = get_option('idoklad_email_password');
         $this->encryption = get_option('idoklad_email_encryption', 'ssl');
+
+        if (class_exists('IDokladProcessor_Logger')) {
+            $this->logger = IDokladProcessor_Logger::get_instance();
+        }
 
         add_action('idoklad_check_emails', array($this, 'check_for_new_emails'));
     }
@@ -75,7 +80,144 @@ class IDokladProcessor_EmailMonitor {
     }
 
     public function process_pending_emails() {
-        return 0;
+        $processed_count = 0;
+        $batch_size = (int) apply_filters('idoklad_processor_queue_batch_size', 5);
+        if ($batch_size <= 0) {
+            $batch_size = 5;
+        }
+
+        $pdf_processor = new IDokladProcessor_PDFProcessor();
+        $chatgpt = new IDokladProcessor_ChatGPTIntegration();
+        $client_id = get_option('idoklad_client_id');
+        $client_secret = get_option('idoklad_client_secret');
+
+        while (true) {
+            $pending_items = IDokladProcessor_Database::get_pending_queue($batch_size);
+
+            if (empty($pending_items)) {
+                break;
+            }
+
+            foreach ($pending_items as $item) {
+                $item_id = (int) $item->id;
+                $log_id = null;
+                $parsed_data = null;
+                $payload = null;
+                $invoice_response = null;
+
+                try {
+                    $log_id = $this->resolve_queue_log_id($item);
+
+                    if ($this->logger) {
+                        $this->logger->info('Processing queue item', array(
+                            'queue_id' => $item_id,
+                            'log_id' => $log_id,
+                            'attempt' => ((int) $item->attempts) + 1,
+                        ));
+                    }
+
+                    $marked = IDokladProcessor_Database::update_queue_status($item_id, 'processing', true);
+                    if ($marked === false) {
+                        throw new Exception('Unable to mark queue item as processing');
+                    }
+
+                    IDokladProcessor_Database::add_queue_step($item_id, 'Processing started', array(
+                        'attempt' => ((int) $item->attempts) + 1,
+                        'started_at' => current_time('mysql'),
+                    ));
+
+                    if ($log_id) {
+                        $this->update_log_processing($log_id);
+                    }
+
+                    $attachment_path = isset($item->attachment_path) ? $item->attachment_path : '';
+                    if (empty($attachment_path) || !file_exists($attachment_path)) {
+                        throw new Exception('Attachment file is missing or inaccessible');
+                    }
+
+                    $pdf_text = $pdf_processor->extract_text($attachment_path, array(
+                        'queue_id' => $item_id,
+                        'email_from' => $item->email_from,
+                    ));
+
+                    if (empty($pdf_text)) {
+                        throw new Exception('No text could be extracted from PDF');
+                    }
+
+                    IDokladProcessor_Database::add_queue_step($item_id, 'PDF text extracted', array(
+                        'characters' => strlen($pdf_text),
+                        'attachment' => $this->get_queue_attachment_name($item),
+                    ));
+
+                    $parsed_data = $chatgpt->extract_invoice_data($pdf_text);
+
+                    IDokladProcessor_Database::add_queue_step($item_id, 'ChatGPT extraction complete', $this->summarize_chatgpt_output($parsed_data));
+
+                    $payload = $chatgpt->build_idoklad_payload($parsed_data, array(
+                        'email_from' => $item->email_from,
+                        'email_subject' => $item->email_subject,
+                        'queue_id' => $item_id,
+                    ));
+
+                    IDokladProcessor_Database::add_queue_step($item_id, 'iDoklad payload prepared', $this->summarize_payload($payload));
+
+                    if (empty($client_id) || empty($client_secret)) {
+                        throw new Exception('iDoklad API credentials are not configured');
+                    }
+
+                    $integration = new IDokladProcessor_IDokladAPIV3Integration($client_id, $client_secret);
+                    $invoice_response = $integration->create_invoice_complete_workflow($payload);
+
+                    if (empty($invoice_response['success'])) {
+                        $error_message = isset($invoice_response['message']) ? $invoice_response['message'] : __('Unknown response from iDoklad API', 'idoklad-invoice-processor');
+                        throw new Exception($error_message);
+                    }
+
+                    IDokladProcessor_Database::update_queue_status($item_id, 'completed');
+
+                    IDokladProcessor_Database::add_queue_step($item_id, 'Processing completed', array(
+                        'invoice_id' => $invoice_response['invoice_id'] ?? null,
+                        'document_number' => $invoice_response['document_number'] ?? null,
+                        'completed_at' => current_time('mysql'),
+                    ));
+
+                    if ($log_id) {
+                        $this->update_log_success($log_id, $parsed_data, $payload, $invoice_response);
+                    }
+
+                    if ($this->logger) {
+                        $this->logger->info('Queue item processed successfully', array(
+                            'queue_id' => $item_id,
+                            'invoice_id' => $invoice_response['invoice_id'] ?? null,
+                            'document_number' => $invoice_response['document_number'] ?? null,
+                        ));
+                    }
+
+                    $processed_count++;
+                } catch (Exception $e) {
+                    $error_message = $e->getMessage();
+
+                    IDokladProcessor_Database::update_queue_status($item_id, 'failed');
+                    IDokladProcessor_Database::add_queue_step($item_id, 'Processing failed', array(
+                        'error' => $error_message,
+                        'failed_at' => current_time('mysql'),
+                    ));
+
+                    if ($log_id) {
+                        $this->update_log_failure($log_id, $error_message, $parsed_data, $payload);
+                    }
+
+                    if ($this->logger) {
+                        $this->logger->error('Queue item processing failed', array(
+                            'queue_id' => $item_id,
+                            'error' => $error_message,
+                        ));
+                    }
+                }
+            }
+        }
+
+        return $processed_count;
     }
 
     private function connect_to_email() {
@@ -160,17 +302,32 @@ class IDokladProcessor_EmailMonitor {
                 ));
 
                 if ($queue_id) {
-                    IDokladProcessor_Database::add_log(array(
+                    $log_id = IDokladProcessor_Database::add_log(array(
                         'email_from' => $from_email,
                         'email_subject' => $subject,
                         'attachment_name' => $attachment['filename'],
                         'processing_status' => 'pending'
                     ));
 
-                    IDokladProcessor_Database::add_queue_step($queue_id, 'Queued from email', array(
+                    $step_data = array(
                         'attachment' => $attachment['filename'],
                         'queued_at' => current_time('mysql')
-                    ));
+                    );
+
+                    if ($log_id) {
+                        $step_data['log_id'] = (int) $log_id;
+                    }
+
+                    IDokladProcessor_Database::add_queue_step($queue_id, 'Queued from email', $step_data);
+
+                    if ($this->logger) {
+                        $this->logger->info('Queued email attachment for processing', array(
+                            'queue_id' => $queue_id,
+                            'email_from' => $from_email,
+                            'attachment' => $attachment['filename'],
+                            'log_id' => $log_id,
+                        ));
+                    }
 
                     $queued++;
                     $pdf_index++;
@@ -197,6 +354,142 @@ class IDokladProcessor_EmailMonitor {
         $queue_id = $email_id . '-' . $sequence . '-' . $hash;
 
         return substr($queue_id, 0, 100);
+    }
+
+    private function resolve_queue_log_id($item) {
+        $details_raw = '';
+
+        if (is_object($item) && isset($item->processing_details)) {
+            $details_raw = $item->processing_details;
+        } elseif (is_array($item) && isset($item['processing_details'])) {
+            $details_raw = $item['processing_details'];
+        }
+
+        $details = $this->decode_processing_details($details_raw);
+
+        if (!empty($details)) {
+            foreach (array_reverse($details) as $detail) {
+                if (isset($detail['data']['log_id']) && $detail['data']['log_id']) {
+                    return (int) $detail['data']['log_id'];
+                }
+            }
+        }
+
+        $email_from = is_object($item) ? ($item->email_from ?? '') : ($item['email_from'] ?? '');
+        $email_subject = is_object($item) ? ($item->email_subject ?? '') : ($item['email_subject'] ?? '');
+        $attachment_name = $this->get_queue_attachment_name($item);
+
+        $log_id = IDokladProcessor_Database::find_latest_log_id($email_from, $email_subject, $attachment_name);
+
+        return $log_id ? (int) $log_id : null;
+    }
+
+    private function decode_processing_details($details_raw) {
+        if (empty($details_raw)) {
+            return array();
+        }
+
+        if (is_array($details_raw)) {
+            return $details_raw;
+        }
+
+        $decoded = json_decode($details_raw, true);
+
+        return is_array($decoded) ? $decoded : array();
+    }
+
+    private function get_queue_attachment_name($item) {
+        $attachment_path = is_object($item) ? ($item->attachment_path ?? '') : ($item['attachment_path'] ?? '');
+
+        if (!empty($attachment_path)) {
+            return basename($attachment_path);
+        }
+
+        return '';
+    }
+
+    private function summarize_chatgpt_output($parsed_data) {
+        $parsed_array = is_array($parsed_data) ? $parsed_data : array();
+
+        $summary = array(
+            'detected_keys' => array_slice(array_keys($parsed_array), 0, 10),
+            'items_count' => (isset($parsed_array['items']) && is_array($parsed_array['items'])) ? count($parsed_array['items']) : 0,
+        );
+
+        if (!empty($parsed_array['invoice_number'])) {
+            $summary['invoice_number'] = $parsed_array['invoice_number'];
+        }
+
+        if (!empty($parsed_array['warnings']) && is_array($parsed_array['warnings'])) {
+            $summary['warnings'] = array_slice($parsed_array['warnings'], 0, 5);
+        }
+
+        return $summary;
+    }
+
+    private function summarize_payload($payload) {
+        $payload_array = is_array($payload) ? $payload : array();
+
+        $summary = array(
+            'document_number' => $payload_array['DocumentNumber'] ?? ($payload_array['document_number'] ?? ''),
+            'total_amount' => isset($payload_array['TotalAmount']) ? $payload_array['TotalAmount'] : null,
+            'items' => (isset($payload_array['Items']) && is_array($payload_array['Items'])) ? count($payload_array['Items']) : 0,
+            'currency' => $payload_array['Currency'] ?? ($payload_array['CurrencyCode'] ?? ''),
+        );
+
+        return array_filter($summary, function ($value) {
+            return $value !== null && $value !== '';
+        });
+    }
+
+    private function update_log_processing($log_id) {
+        IDokladProcessor_Database::update_log($log_id, array(
+            'processing_status' => 'processing',
+            'error_message' => '',
+        ));
+    }
+
+    private function update_log_success($log_id, $parsed_data, $payload, $invoice_response) {
+        $parsed_array = is_array($parsed_data) ? $parsed_data : array();
+        $payload_array = is_array($payload) ? $payload : array();
+        $response_array = is_array($invoice_response) ? $invoice_response : array();
+
+        $log_update = array(
+            'processing_status' => 'success',
+            'extracted_data' => array(
+                'parsed' => $parsed_array,
+                'idoklad_payload' => $payload_array,
+                'summary' => array(
+                    'warnings' => isset($parsed_array['warnings']) && is_array($parsed_array['warnings']) ? $parsed_array['warnings'] : array(),
+                    'checklist' => isset($parsed_array['checklist']) && is_array($parsed_array['checklist']) ? $parsed_array['checklist'] : array(),
+                ),
+            ),
+            'idoklad_response' => $response_array,
+            'error_message' => '',
+            'processed_at' => current_time('mysql'),
+        );
+
+        IDokladProcessor_Database::update_log($log_id, $log_update);
+    }
+
+    private function update_log_failure($log_id, $error_message, $parsed_data = null, $payload = null) {
+        $parsed_array = is_array($parsed_data) ? $parsed_data : array();
+        $payload_array = is_array($payload) ? $payload : array();
+
+        $log_update = array(
+            'processing_status' => 'failed',
+            'error_message' => $error_message,
+            'processed_at' => current_time('mysql'),
+        );
+
+        if (!empty($parsed_array) || !empty($payload_array)) {
+            $log_update['extracted_data'] = array(
+                'parsed' => $parsed_array,
+                'idoklad_payload' => $payload_array,
+            );
+        }
+
+        IDokladProcessor_Database::update_log($log_id, $log_update);
     }
 
     private function get_email_attachments($email_id) {
