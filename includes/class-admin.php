@@ -1184,227 +1184,28 @@ class IDokladProcessor_Admin {
      */
     public function test_pdf_parsing() {
         check_ajax_referer('idoklad_admin_nonce', 'nonce');
-        
+
         if (!current_user_can('manage_options')) {
             wp_die(__('Insufficient permissions', 'idoklad-invoice-processor'));
         }
-        
-        if (empty($_FILES['pdf_file'])) {
-            wp_send_json_error(__('No PDF file uploaded', 'idoklad-invoice-processor'));
-        }
-        
-        $file = $_FILES['pdf_file'];
-        
-        if ($file['error'] !== UPLOAD_ERR_OK) {
-            wp_send_json_error(__('File upload error', 'idoklad-invoice-processor'));
-        }
-        
-        if ($file['type'] !== 'application/pdf') {
-            wp_send_json_error(__('File must be a PDF', 'idoklad-invoice-processor'));
-        }
-        
-        $temp_path = $file['tmp_name'];
-        
-        try {
-            $pdf_processor = new IDokladProcessor_PDFProcessor();
-            
-            // Get parsing methods info
-            $methods = $pdf_processor->test_parsing_methods();
-            
-            // Try to extract text
-            $start_time = microtime(true);
-            $text = $pdf_processor->extract_text($temp_path);
-            $end_time = microtime(true);
-            $parse_time = round(($end_time - $start_time) * 1000, 2);
-            
-            // Get metadata
-            $metadata = $pdf_processor->get_metadata($temp_path);
-            $page_count = $pdf_processor->get_page_count($temp_path);
-            
-            wp_send_json_success(array(
-                'text' => $text,
-                'text_length' => strlen($text),
-                'preview' => substr($text, 0, 500),
-                'parse_time_ms' => $parse_time,
-                'metadata' => $metadata,
-                'page_count' => $page_count,
-                'file_size' => $file['size'],
-                'methods' => $methods
-            ));
-            
-        } catch (Exception $e) {
-            wp_send_json_error(__('PDF parsing failed: ', 'idoklad-invoice-processor') . $e->getMessage());
-        }
+
+        wp_send_json_success(array(
+            'deprecated' => true,
+            'message' => __('Direct PDF parsing is no longer available. Use the ChatGPT extraction test to validate invoices.', 'idoklad-invoice-processor'),
+        ));
     }
-    
+
     /**
      * Test OCR on PDF (AJAX)
      */
     public function test_ocr_on_pdf() {
         check_ajax_referer('idoklad_admin_nonce', 'nonce');
-        
+
         if (!current_user_can('manage_options')) {
             wp_die(__('Insufficient permissions', 'idoklad-invoice-processor'));
         }
-        
-        if (empty($_FILES['pdf_file'])) {
-            wp_send_json_error(__('No PDF file uploaded', 'idoklad-invoice-processor'));
-        }
-        
-        $file = $_FILES['pdf_file'];
-        
-        if ($file['error'] !== UPLOAD_ERR_OK) {
-            wp_send_json_error(__('File upload error', 'idoklad-invoice-processor'));
-        }
-        
-        $temp_path = $file['tmp_name'];
-        
-        // OCR testing is deprecated - PDF.co handles OCR automatically
-        wp_send_json_error('OCR testing is no longer available. PDF.co handles all OCR automatically.');
-        return;
-        
-        try {
-            // OCR testing deprecated
-            
-            // Enable debug for this test
-            $original_debug = get_option('idoklad_debug_mode');
-            update_option('idoklad_debug_mode', true);
-            
-            // Clear previous response
-            delete_option('idoklad_last_ocr_response');
-            
-            // Get method availability first
-            $methods = $ocr_processor->test_ocr_methods();
-            
-            $start_time = microtime(true);
-            
-            // Use special test method that captures API response
-            try {
-                $text = $ocr_processor->test_ocr_space_with_response($temp_path);
-            } catch (Exception $inner_e) {
-                // Fall back to regular method
-                $text = $ocr_processor->extract_text_from_scanned_pdf($temp_path);
-            }
-            
-            $end_time = microtime(true);
-            $ocr_time = round(($end_time - $start_time) * 1000, 2);
-            
-            // Get captured API response
-            $api_response = get_option('idoklad_last_ocr_response');
-            
-            // Restore debug
-            update_option('idoklad_debug_mode', $original_debug);
-            
-            wp_send_json_success(array(
-                'text' => $text,
-                'text_length' => strlen($text),
-                'preview' => substr($text, 0, 500),
-                'ocr_time_ms' => $ocr_time,
-                'methods' => $methods,
-                'api_response' => $api_response
-            ));
-            
-        } catch (Exception $e) {
-            // Restore debug
-            if (isset($original_debug)) {
-                update_option('idoklad_debug_mode', $original_debug);
-            }
-            
-            // Get diagnostics (OCR is now handled by PDF.co)
-            $methods = array();
-            
-            // Build detailed error message
-            $error_details = array();
-            $error_details[] = 'Error: ' . $e->getMessage();
-            $error_details[] = '';
-            $error_details[] = 'Diagnostic Information:';
-            
-            // Check PDF to Image conversion
-            $has_converter = false;
-            if ($methods['imagemagick']['available']) {
-                $error_details[] = '✓ ImageMagick (convert) is available';
-                $has_converter = true;
-            } else {
-                $error_details[] = '✗ ImageMagick (convert) not available';
-            }
-            
-            if ($methods['ghostscript']['available']) {
-                $error_details[] = '✓ Ghostscript (gs) is available';
-                $has_converter = true;
-            } else {
-                $error_details[] = '✗ Ghostscript (gs) not available';
-            }
-            
-            if ($methods['imagick_extension']['available']) {
-                $error_details[] = '✓ PHP Imagick extension is loaded';
-                $has_converter = true;
-            } else {
-                $error_details[] = '✗ PHP Imagick extension not loaded';
-            }
-            
-            if (!$has_converter) {
-                $error_details[] = '';
-                $error_details[] = '⚠️  No PDF to image converter available!';
-                $error_details[] = 'Install ImageMagick, Ghostscript, or PHP Imagick extension';
-            }
-            
-            $error_details[] = '';
-            
-            // Check OCR methods
-            $has_ocr = false;
-            
-            if ($methods['tesseract']['enabled']) {
-                if ($methods['tesseract']['available']) {
-                    $error_details[] = '✓ Tesseract is available and enabled';
-                    $has_ocr = true;
-                } else {
-                    $error_details[] = '✗ Tesseract is enabled but not installed';
-                }
-            } else {
-                $error_details[] = '⚠️  Tesseract is disabled in settings';
-            }
-            
-            if ($methods['ocr_space']['enabled']) {
-                if ($methods['ocr_space']['available']) {
-                    $error_details[] = '✓ OCR.space API is configured and enabled';
-                    $has_ocr = true;
-                } else {
-                    $error_details[] = '✗ OCR.space is enabled but API key is missing';
-                }
-            } else {
-                $error_details[] = '⚠️  OCR.space is not enabled';
-            }
-            
-            if ($methods['google_vision']['enabled']) {
-                if ($methods['google_vision']['available']) {
-                    $error_details[] = '✓ Google Vision API is configured and enabled';
-                    $has_ocr = true;
-                } else {
-                    $error_details[] = '✗ Google Vision is enabled but API key is missing';
-                }
-            } else {
-                $error_details[] = '⚠️  Google Vision is not enabled';
-            }
-            
-            if (!$has_ocr) {
-                $error_details[] = '';
-                $error_details[] = '⚠️  No OCR method is available!';
-                $error_details[] = 'Enable and configure at least one: Tesseract, OCR.space, or Google Vision';
-            }
-            
-            $error_details[] = '';
-            $error_details[] = 'Check WordPress debug.log for detailed error messages.';
-            
-            // Get captured API response (if any)
-            $api_response = get_option('idoklad_last_ocr_response');
-            
-            wp_send_json_error(array(
-                'message' => $e->getMessage(),
-                'details' => implode("\n", $error_details),
-                'methods' => $methods,
-                'api_response' => $api_response
-            ));
-        }
+
+        wp_send_json_error(__('OCR testing has been removed. ChatGPT now handles extraction directly from uploaded PDFs.', 'idoklad-invoice-processor'));
     }
     
     /**
@@ -1547,11 +1348,18 @@ class IDokladProcessor_Admin {
         }
         
         try {
-            $pdf_processor = new IDokladProcessor_PDFProcessor();
-            $methods = $pdf_processor->test_parsing_methods();
-            
+            $has_api_key = !empty(get_option('idoklad_chatgpt_api_key'));
+            $methods = array(
+                'chatgpt' => array(
+                    'available' => $has_api_key,
+                    'name' => __('ChatGPT Invoice Extraction', 'idoklad-invoice-processor'),
+                    'description' => __('Send invoices directly to ChatGPT for structured JSON extraction.', 'idoklad-invoice-processor'),
+                    'category' => __('AI Extraction', 'idoklad-invoice-processor'),
+                ),
+            );
+
             wp_send_json_success($methods);
-            
+
         } catch (Exception $e) {
             wp_send_json_error(__('Failed to get parsing methods: ', 'idoklad-invoice-processor') . $e->getMessage());
         }
@@ -1574,6 +1382,7 @@ class IDokladProcessor_Admin {
 
         $pdf_text = '';
         $temp_file = null;
+        $file_name = '';
 
         try {
             if (!empty($_FILES['pdf_file']['tmp_name'])) {
@@ -1588,9 +1397,7 @@ class IDokladProcessor_Admin {
                 if (!move_uploaded_file($_FILES['pdf_file']['tmp_name'], $temp_file)) {
                     throw new Exception(__('Failed to move uploaded PDF for processing', 'idoklad-invoice-processor'));
                 }
-
-                $pdf_processor = new IDokladProcessor_PDFProcessor();
-                $pdf_text = $pdf_processor->extract_text($temp_file);
+                $file_name = sanitize_file_name($_FILES['pdf_file']['name']);
             }
 
             if (empty($pdf_text) && isset($_POST['pdf_text'])) {
@@ -1599,29 +1406,41 @@ class IDokladProcessor_Admin {
 
             $pdf_text = trim($pdf_text);
 
-            if (empty($pdf_text)) {
+            $chatgpt = new IDokladProcessor_ChatGPTIntegration();
+            $context = array(
+                'file_name' => $file_name,
+            );
+
+            if (!empty($pdf_text)) {
+                $extracted_data = $chatgpt->extract_invoice_data_from_text($pdf_text, $context);
+            } elseif (!empty($temp_file)) {
+                $extracted_data = $chatgpt->extract_invoice_data_from_pdf($temp_file, $context);
+            } else {
                 throw new Exception(__('Provide a PDF file or extracted text to run the ChatGPT test.', 'idoklad-invoice-processor'));
             }
 
-            $chatgpt = new IDokladProcessor_ChatGPTIntegration();
-            $extracted_data = $chatgpt->extract_invoice_data($pdf_text);
-
             // Attach diagnostics metadata
             $extracted_data['source'] = 'chatgpt';
-            $extracted_data['pdf_text'] = $pdf_text;
 
-            $parser = new IDokladProcessor_PDFCoAIParserEnhanced();
-            $transformation = $parser->transform_structured_data($extracted_data, 'chatgpt_diagnostics');
+            if (!empty($pdf_text)) {
+                $extracted_data['pdf_text_preview'] = function_exists('mb_substr') ? mb_substr($pdf_text, 0, 500) : substr($pdf_text, 0, 500);
+            }
 
-            $text_preview = function_exists('mb_substr') ? mb_substr($pdf_text, 0, 500) : substr($pdf_text, 0, 500);
+            $idoklad_payload = $chatgpt->build_idoklad_payload($extracted_data, $context);
+
+            $text_preview = '';
+            if (!empty($pdf_text)) {
+                $text_preview = function_exists('mb_substr') ? mb_substr($pdf_text, 0, 500) : substr($pdf_text, 0, 500);
+            } elseif (!empty($file_name)) {
+                $text_preview = sprintf(__('PDF "%s" processed via base64 (preview unavailable).', 'idoklad-invoice-processor'), $file_name);
+            }
 
             wp_send_json_success(array(
                 'model' => get_option('idoklad_chatgpt_model', 'gpt-4o'),
                 'text_length' => strlen($pdf_text),
                 'text_preview' => $text_preview,
                 'extracted_data' => $extracted_data,
-                'idoklad_data' => $transformation['data'],
-                'validation' => $transformation['validation']
+                'idoklad_data' => $idoklad_payload,
             ));
 
         } catch (Exception $e) {
@@ -2209,104 +2028,57 @@ class IDokladProcessor_Admin {
      */
     private function process_single_queue_item($item) {
         try {
-            // Step 1: Parse the PDF using the enhanced PDF.co AI parser
             if (empty($item['attachment_path']) || !file_exists($item['attachment_path'])) {
                 throw new Exception('PDF attachment not found: ' . ($item['attachment_path'] ?? 'No path'));
             }
-            
-            // Convert local file path to accessible URL
-            $pdf_url = $this->get_accessible_pdf_url($item['attachment_path']);
-            
-            // Initialize PDF parser
-            require_once IDOKLAD_PROCESSOR_PLUGIN_DIR . 'includes/class-pdf-co-ai-parser-enhanced.php';
-            $parser = new IDokladProcessor_PDFCoAIParserEnhanced();
-            
-            // Parse the PDF
-            $parse_result = $parser->parse_invoice_with_debug($pdf_url);
-            
-            if (!$parse_result['success']) {
-                throw new Exception('PDF parsing failed: ' . ($parse_result['message'] ?? 'Unknown error'));
-            }
-            
-            $idoklad_data = $parse_result['data'];
-            
-            // Step 2: Send to iDoklad API using the integration
+
+            $chatgpt = new IDokladProcessor_ChatGPTIntegration();
+            $context = array(
+                'file_name' => basename($item['attachment_path']),
+                'email_from' => isset($item['email_from']) ? $item['email_from'] : '',
+                'email_subject' => isset($item['email_subject']) ? $item['email_subject'] : '',
+                'queue_id' => isset($item['id']) ? $item['id'] : null,
+            );
+
+            $parsed_data = $chatgpt->extract_invoice_data_from_pdf($item['attachment_path'], $context);
+            $payload = $chatgpt->build_idoklad_payload($parsed_data, $context);
+
             $client_id = get_option('idoklad_client_id');
             $client_secret = get_option('idoklad_client_secret');
-            
+
             if (empty($client_id) || empty($client_secret)) {
                 throw new Exception('iDoklad API credentials not configured');
             }
-            
-            require_once IDOKLAD_PROCESSOR_PLUGIN_DIR . 'includes/class-idoklad-api-v3-integration.php';
+
             $integration = new IDokladProcessor_IDokladAPIV3Integration($client_id, $client_secret);
-            
-            // Create invoice using the parsed data
-            $invoice_result = $integration->create_invoice_complete_workflow($idoklad_data);
-            
-            if (!$invoice_result['success']) {
-                throw new Exception('Invoice creation failed: ' . ($invoice_result['message'] ?? 'Unknown error'));
+            $invoice_result = $integration->create_invoice_complete_workflow($payload);
+
+            if (empty($invoice_result['success'])) {
+                $message = isset($invoice_result['message']) ? $invoice_result['message'] : __('Unknown error creating invoice', 'idoklad-invoice-processor');
+                throw new Exception($message);
             }
-            
+
             return array(
                 'success' => true,
                 'data' => array(
                     'processed_at' => current_time('mysql'),
-                    'item_id' => $item['id'],
+                    'item_id' => $item['id'] ?? null,
                     'invoice_id' => $invoice_result['invoice_id'] ?? null,
                     'document_number' => $invoice_result['document_number'] ?? null,
-                    'parse_result' => $parse_result,
-                    'invoice_result' => $invoice_result
-                )
+                    'parsed_data' => $parsed_data,
+                    'idoklad_payload' => $payload,
+                    'invoice_result' => $invoice_result,
+                ),
             );
-            
+
         } catch (Exception $e) {
             return array(
                 'success' => false,
-                'message' => $e->getMessage()
+                'message' => $e->getMessage(),
             );
         }
     }
-    
-    /**
-     * Convert local file path to accessible URL for PDF.co API
-     */
-    private function get_accessible_pdf_url($file_path) {
-        // If it's already a URL, return as is
-        if (filter_var($file_path, FILTER_VALIDATE_URL)) {
-            return $file_path;
-        }
-        
-        // Convert local path to WordPress uploads URL
-        $upload_dir = wp_upload_dir();
-        $upload_path = $upload_dir['basedir'];
-        $upload_url = $upload_dir['baseurl'];
-        
-        // Check if file is in uploads directory
-        if (strpos($file_path, $upload_path) === 0) {
-            $relative_path = str_replace($upload_path, '', $file_path);
-            return $upload_url . $relative_path;
-        }
-        
-        // For files outside uploads directory, try to create a temporary accessible URL
-        // This is a fallback - in production, files should be in the uploads directory
-        $file_name = basename($file_path);
-        $temp_url = $upload_url . '/idoklad-temp/' . $file_name;
-        
-        // Copy file to temp location if needed
-        $temp_dir = $upload_path . '/idoklad-temp/';
-        if (!file_exists($temp_dir)) {
-            wp_mkdir_p($temp_dir);
-        }
-        
-        $temp_path = $temp_dir . $file_name;
-        if (!file_exists($temp_path)) {
-            copy($file_path, $temp_path);
-        }
-        
-        return $temp_url;
-    }
-    
+
     /**
      * Reprocess selected queue items (AJAX)
      */

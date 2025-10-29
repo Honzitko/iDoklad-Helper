@@ -470,7 +470,13 @@ jQuery(document).ready(function($) {
             contentType: false,
             success: function(response) {
                 if (response.success) {
-                    lastPdfText = response.data.text;
+                    if (response.data && response.data.deprecated) {
+                        $('#pdf-parsing-result').html('<div class="result-box result-info"><p>' + escapeHtml(response.data.message) + '</p></div>').show();
+                        lastPdfText = '';
+                        return;
+                    }
+
+                    lastPdfText = response.data.text || '';
                     displayPdfParsingResults(response.data);
                     $('#pdf-parsing-result').show();
                 } else {

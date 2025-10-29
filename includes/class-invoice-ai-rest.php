@@ -95,22 +95,33 @@ class IDokladProcessor_InvoiceAIRest {
         ));
 
         try {
-            if (empty($invoice_text) && !empty($invoice_url)) {
-                $temp_file = $this->download_invoice($invoice_url);
-                if (is_wp_error($temp_file)) {
-                    return new WP_REST_Response(array('error' => $temp_file->get_error_message()), 500);
-                }
+        $pdf_path = null;
 
-                $pdf_processor = new IDokladProcessor_PDFProcessor();
-                $invoice_text = $pdf_processor->extract_text($temp_file);
+        if (empty($invoice_text) && !empty($invoice_url)) {
+            $temp_file = $this->download_invoice($invoice_url);
+            if (is_wp_error($temp_file)) {
+                return new WP_REST_Response(array('error' => $temp_file->get_error_message()), 500);
             }
 
-            if (empty($invoice_text)) {
-                return new WP_REST_Response(array('error' => 'Invoice content is empty.'), 400);
-            }
+            $pdf_path = $temp_file;
+        }
 
-            $chatgpt = new IDokladProcessor_ChatGPTIntegration();
-            $parsed = $chatgpt->extract_invoice_data($invoice_text);
+        if (empty($invoice_text) && empty($pdf_path)) {
+            return new WP_REST_Response(array('error' => 'Invoice content is empty.'), 400);
+        }
+
+        $chatgpt = new IDokladProcessor_ChatGPTIntegration();
+        $context = array(
+            'file_name' => $attachment_name,
+            'email_from' => $email_for_storage,
+            'email_subject' => $email_subject,
+        );
+
+        if (!empty($invoice_text)) {
+            $parsed = $chatgpt->extract_invoice_data_from_text($invoice_text, $context);
+        } else {
+            $parsed = $chatgpt->extract_invoice_data_from_pdf($pdf_path, $context);
+        }
             $payload = $chatgpt->build_idoklad_payload($parsed, array(
                 'email_from' => $email_for_storage,
                 'email_subject' => $email_subject,

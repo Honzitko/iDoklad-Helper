@@ -33,7 +33,6 @@ $required_files = array(
     'includes/class-database.php',
     'includes/class-admin.php',
     'includes/class-email-monitor.php',
-    'includes/class-pdf-processor.php',
     'includes/class-chatgpt-integration.php',
     'includes/class-invoice-ai-rest.php',
     'includes/class-idoklad-api-v3-integration.php',
