@@ -187,28 +187,172 @@ class IDokladProcessor_ChatGPTIntegration {
      * Normalize extracted data
      */
     private function normalize_extracted_data($data) {
+        $data = is_array($data) ? $data : array();
+
+        // Handle ChatGPT parser responses that wrap data inside an Invoice object
+        $invoice_section = null;
+        if (isset($data['Invoice']) && is_array($data['Invoice'])) {
+            $invoice_section = $data['Invoice'];
+        } elseif (isset($data['invoice']) && is_array($data['invoice'])) {
+            $invoice_section = $data['invoice'];
+        }
+
+        if ($invoice_section) {
+            $prices = isset($invoice_section['Prices']) && is_array($invoice_section['Prices'])
+                ? $invoice_section['Prices']
+                : array();
+
+            $partner = isset($invoice_section['Partner']) && is_array($invoice_section['Partner'])
+                ? $invoice_section['Partner']
+                : array();
+
+            if (empty($data['invoice_number']) && isset($invoice_section['DocumentNumber'])) {
+                $data['invoice_number'] = $invoice_section['DocumentNumber'];
+            }
+
+            if (empty($data['date']) && isset($invoice_section['DateOfIssue'])) {
+                $data['date'] = $invoice_section['DateOfIssue'];
+            }
+
+            if (empty($data['due_date']) && isset($invoice_section['DateOfMaturity'])) {
+                $data['due_date'] = $invoice_section['DateOfMaturity'];
+            }
+
+            if (empty($data['total_amount'])) {
+                if (isset($prices['TotalWithVat'])) {
+                    $data['total_amount'] = $prices['TotalWithVat'];
+                } elseif (isset($prices['TotalWithoutVat'])) {
+                    $data['total_amount'] = $prices['TotalWithoutVat'];
+                }
+            }
+
+            if (empty($data['currency']) && isset($invoice_section['CurrencyCode'])) {
+                $data['currency'] = $invoice_section['CurrencyCode'];
+            }
+
+            if (empty($data['variable_symbol']) && isset($invoice_section['VariableSymbol'])) {
+                $data['variable_symbol'] = $invoice_section['VariableSymbol'];
+            }
+
+            if (empty($data['order_number']) && isset($invoice_section['OrderNumber'])) {
+                $data['order_number'] = $invoice_section['OrderNumber'];
+            }
+
+            if (empty($data['notes']) && isset($invoice_section['Notes'])) {
+                $notes_value = $invoice_section['Notes'];
+                if (is_array($notes_value)) {
+                    $notes_value = implode("\n", array_map('trim', $notes_value));
+                }
+                $data['notes'] = $notes_value;
+            }
+
+            if (empty($data['items']) && isset($invoice_section['Items']) && is_array($invoice_section['Items'])) {
+                $data['items'] = $invoice_section['Items'];
+            }
+
+            if (empty($data['supplier_name']) && isset($partner['PartnerName'])) {
+                $data['supplier_name'] = $partner['PartnerName'];
+            }
+
+            if (empty($data['supplier_vat_number']) && isset($partner['VatIdentificationNumber'])) {
+                $data['supplier_vat_number'] = $partner['VatIdentificationNumber'];
+            }
+
+            if (empty($data['supplier_id_number']) && isset($partner['IdentificationNumber'])) {
+                $data['supplier_id_number'] = $partner['IdentificationNumber'];
+            }
+
+            if (empty($data['supplier_address']) && isset($partner['AddressFull'])) {
+                $data['supplier_address'] = $partner['AddressFull'];
+
+                $address_parts = $this->split_full_address($partner['AddressFull']);
+                if (empty($data['supplier_city']) && !empty($address_parts['city'])) {
+                    $data['supplier_city'] = $address_parts['city'];
+                }
+                if (empty($data['supplier_postal_code']) && !empty($address_parts['postal_code'])) {
+                    $data['supplier_postal_code'] = $address_parts['postal_code'];
+                }
+                if (empty($data['supplier_street']) && !empty($address_parts['street'])) {
+                    $data['supplier_street'] = $address_parts['street'];
+                }
+            }
+        }
+
         $normalized = array();
-        
+
         // Required fields
-        $normalized['invoice_number'] = isset($data['invoice_number']) ? trim($data['invoice_number']) : '';
+        $normalized['invoice_number'] = isset($data['invoice_number']) ? trim((string) $data['invoice_number']) : '';
         $normalized['date'] = isset($data['date']) ? $this->normalize_date($data['date']) : '';
         $normalized['total_amount'] = isset($data['total_amount']) ? $this->normalize_amount($data['total_amount']) : '';
-        $normalized['supplier_name'] = isset($data['supplier_name']) ? trim($data['supplier_name']) : '';
-        
+        $normalized['supplier_name'] = isset($data['supplier_name']) ? trim((string) $data['supplier_name']) : '';
+
         // Optional fields
-        $normalized['supplier_vat_number'] = isset($data['supplier_vat_number']) ? trim($data['supplier_vat_number']) : '';
-        $normalized['currency'] = isset($data['currency']) ? strtoupper(trim($data['currency'])) : 'CZK';
+        $normalized['supplier_vat_number'] = isset($data['supplier_vat_number']) ? trim((string) $data['supplier_vat_number']) : '';
+        $normalized['currency'] = isset($data['currency']) ? strtoupper(trim((string) $data['currency'])) : 'CZK';
         $normalized['variable_symbol'] = $this->extract_variable_symbol($data);
         $normalized['items'] = isset($data['items']) && is_array($data['items']) ? $this->normalize_items($data['items']) : array();
-        
+
         // Additional fields that might be useful
-        $normalized['customer_name'] = isset($data['customer_name']) ? trim($data['customer_name']) : '';
-        $normalized['customer_vat_number'] = isset($data['customer_vat_number']) ? trim($data['customer_vat_number']) : '';
+        $normalized['customer_name'] = isset($data['customer_name']) ? trim((string) $data['customer_name']) : '';
+        $normalized['customer_vat_number'] = isset($data['customer_vat_number']) ? trim((string) $data['customer_vat_number']) : '';
         $normalized['due_date'] = isset($data['due_date']) ? $this->normalize_date($data['due_date']) : '';
-        $normalized['payment_method'] = isset($data['payment_method']) ? trim($data['payment_method']) : '';
-        $normalized['notes'] = isset($data['notes']) ? trim($data['notes']) : '';
+        $normalized['payment_method'] = isset($data['payment_method']) ? trim((string) $data['payment_method']) : '';
+        $normalized['notes'] = isset($data['notes']) ? trim((string) $data['notes']) : '';
+
+        if (isset($data['supplier_address'])) {
+            $normalized['supplier_address'] = trim((string) $data['supplier_address']);
+        }
+        if (isset($data['supplier_city'])) {
+            $normalized['supplier_city'] = trim((string) $data['supplier_city']);
+        }
+        if (isset($data['supplier_postal_code'])) {
+            $normalized['supplier_postal_code'] = trim((string) $data['supplier_postal_code']);
+        }
+        if (isset($data['supplier_street'])) {
+            $normalized['supplier_street'] = trim((string) $data['supplier_street']);
+        }
+        if (isset($data['supplier_id_number'])) {
+            $normalized['supplier_id_number'] = trim((string) $data['supplier_id_number']);
+        }
+        if (isset($data['order_number'])) {
+            $normalized['order_number'] = trim((string) $data['order_number']);
+        }
 
         return $normalized;
+    }
+
+    private function split_full_address($address) {
+        $result = array(
+            'street' => '',
+            'postal_code' => '',
+            'city' => '',
+        );
+
+        if (!is_string($address) || trim($address) === '') {
+            return $result;
+        }
+
+        $parts = array_map('trim', explode(',', $address));
+
+        if (!empty($parts[0])) {
+            $result['street'] = $parts[0];
+        }
+
+        if (isset($parts[1])) {
+            $second_part = $parts[1];
+            if (preg_match('/^(\d{3}\s?\d{2})(.*)$/u', $second_part, $matches)) {
+                $result['postal_code'] = trim($matches[1]);
+                $result['city'] = trim($matches[2]);
+            } else {
+                $result['city'] = $second_part;
+            }
+        }
+
+        if (isset($parts[2]) && $result['city'] === '') {
+            $result['city'] = $parts[2];
+        }
+
+        return $result;
     }
 
     private function extract_variable_symbol($data) {
@@ -248,21 +392,35 @@ class IDokladProcessor_ChatGPTIntegration {
      * Normalize amount
      */
     private function normalize_amount($amount) {
-        if (empty($amount)) {
+        if ($amount === null) {
             return '';
         }
-        
+
+        if (is_numeric($amount)) {
+            return floatval($amount);
+        }
+
+        if (!is_string($amount)) {
+            $amount = (string) $amount;
+        }
+
+        $amount = trim($amount);
+
+        if ($amount === '') {
+            return '';
+        }
+
         // Remove currency symbols and spaces
         $amount = preg_replace('/[^\d.,\-]/', '', $amount);
-        
+
         // Convert comma to dot for decimal separator
         $amount = str_replace(',', '.', $amount);
-        
+
         // Ensure it's a valid number
         if (!is_numeric($amount)) {
             return '';
         }
-        
+
         return floatval($amount);
     }
 
@@ -290,14 +448,90 @@ class IDokladProcessor_ChatGPTIntegration {
             if (!is_array($item)) {
                 continue;
             }
-            
+
             $normalized_item = array(
-                'name' => isset($item['name']) ? trim($item['name']) : '',
-                'quantity' => isset($item['quantity']) ? floatval($item['quantity']) : 1,
-                'price' => isset($item['price']) ? $this->normalize_amount($item['price']) : 0,
-                'total' => isset($item['total']) ? $this->normalize_amount($item['total']) : 0
+                'name' => '',
+                'unit' => 'pcs',
+                'quantity' => 1,
+                'price' => 0,
+                'total' => 0,
+                'price_type' => 1,
+                'vat_rate_type' => 2,
+                'vat_rate' => 0.0,
+                'is_tax_movement' => false,
+                'discount_percentage' => 0.0,
             );
-            
+
+            if (isset($item['name'])) {
+                $normalized_item['name'] = trim((string) $item['name']);
+            } elseif (isset($item['Name'])) {
+                $normalized_item['name'] = trim((string) $item['Name']);
+            } elseif (isset($item['description'])) {
+                $normalized_item['name'] = trim((string) $item['description']);
+            } elseif (isset($item['Description'])) {
+                $normalized_item['name'] = trim((string) $item['Description']);
+            }
+
+            if (isset($item['unit'])) {
+                $normalized_item['unit'] = $this->normalize_unit_label($item['unit']);
+            } elseif (isset($item['Unit'])) {
+                $normalized_item['unit'] = $this->normalize_unit_label($item['Unit']);
+            } elseif (isset($item['UnitOfMeasure'])) {
+                $normalized_item['unit'] = $this->normalize_unit_label($item['UnitOfMeasure']);
+            }
+
+            if (isset($item['quantity'])) {
+                $normalized_item['quantity'] = floatval($item['quantity']);
+            } elseif (isset($item['Quantity'])) {
+                $normalized_item['quantity'] = floatval($item['Quantity']);
+            } elseif (isset($item['Amount'])) {
+                $normalized_item['quantity'] = floatval($item['Amount']);
+            }
+
+            if (isset($item['price'])) {
+                $normalized_item['price'] = $this->normalize_amount($item['price']);
+            } elseif (isset($item['UnitPrice'])) {
+                $normalized_item['price'] = $this->normalize_amount($item['UnitPrice']);
+            } elseif (isset($item['Price'])) {
+                $normalized_item['price'] = $this->normalize_amount($item['Price']);
+            }
+
+            if (isset($item['total'])) {
+                $normalized_item['total'] = $this->normalize_amount($item['total']);
+            } elseif (isset($item['Total'])) {
+                $normalized_item['total'] = $this->normalize_amount($item['Total']);
+            }
+
+            if (isset($item['price_type'])) {
+                $normalized_item['price_type'] = (int) $item['price_type'];
+            } elseif (isset($item['PriceType'])) {
+                $normalized_item['price_type'] = (int) $item['PriceType'];
+            }
+
+            if (isset($item['vat_rate_type'])) {
+                $normalized_item['vat_rate_type'] = (int) $item['vat_rate_type'];
+            } elseif (isset($item['VatRateType'])) {
+                $normalized_item['vat_rate_type'] = (int) $item['VatRateType'];
+            }
+
+            if (isset($item['vat_rate'])) {
+                $normalized_item['vat_rate'] = (float) $this->normalize_amount($item['vat_rate']);
+            } elseif (isset($item['VatRate'])) {
+                $normalized_item['vat_rate'] = (float) $this->normalize_amount($item['VatRate']);
+            }
+
+            if (isset($item['is_tax_movement'])) {
+                $normalized_item['is_tax_movement'] = (bool) $item['is_tax_movement'];
+            } elseif (isset($item['IsTaxMovement'])) {
+                $normalized_item['is_tax_movement'] = (bool) $item['IsTaxMovement'];
+            }
+
+            if (isset($item['discount_percentage'])) {
+                $normalized_item['discount_percentage'] = (float) $item['discount_percentage'];
+            } elseif (isset($item['DiscountPercentage'])) {
+                $normalized_item['discount_percentage'] = (float) $item['DiscountPercentage'];
+            }
+
             // Calculate total if not provided
             if ($normalized_item['total'] == 0 && $normalized_item['quantity'] > 0 && $normalized_item['price'] > 0) {
                 $normalized_item['total'] = $normalized_item['quantity'] * $normalized_item['price'];
@@ -307,6 +541,32 @@ class IDokladProcessor_ChatGPTIntegration {
         }
         
         return $normalized_items;
+    }
+
+    private function normalize_unit_label($unit) {
+        if (!is_string($unit)) {
+            $unit = (string) $unit;
+        }
+
+        $unit = trim($unit);
+
+        if ($unit === '') {
+            return 'pcs';
+        }
+
+        $normalized = strtolower($unit);
+
+        $map = array(
+            'ks' => 'pcs',
+            'kus' => 'pcs',
+            'kusy' => 'pcs',
+        );
+
+        if (isset($map[$normalized])) {
+            return $map[$normalized];
+        }
+
+        return $unit;
     }
 
     /**
@@ -364,6 +624,10 @@ class IDokladProcessor_ChatGPTIntegration {
             $payload['VariableSymbol'] = $variable_symbol;
         }
 
+        if (!empty($extracted_data['order_number'])) {
+            $payload['OrderNumber'] = $extracted_data['order_number'];
+        }
+
         if (!empty($partner_data)) {
             $payload['partner_data'] = $partner_data;
         }
@@ -389,15 +653,15 @@ class IDokladProcessor_ChatGPTIntegration {
 
                 return array(
                     'Name' => $item['name'] ?: __('Invoice item', 'idoklad-invoice-processor'),
-                    'Unit' => 'pcs',
+                    'Unit' => !empty($item['unit']) ? $item['unit'] : 'pcs',
                     'Amount' => $item['quantity'] ?: 1,
                     'UnitPrice' => $unit_price,
                     'Total' => $total,
-                    'PriceType' => 1,
-                    'VatRateType' => 2,
-                    'VatRate' => 0.0,
-                    'IsTaxMovement' => false,
-                    'DiscountPercentage' => 0.0
+                    'PriceType' => isset($item['price_type']) ? (int) $item['price_type'] : 1,
+                    'VatRateType' => isset($item['vat_rate_type']) ? (int) $item['vat_rate_type'] : 2,
+                    'VatRate' => isset($item['vat_rate']) ? (float) $item['vat_rate'] : 0.0,
+                    'IsTaxMovement' => !empty($item['is_tax_movement']),
+                    'DiscountPercentage' => isset($item['discount_percentage']) ? (float) $item['discount_percentage'] : 0.0
                 );
             }, $normalized_items);
         }
