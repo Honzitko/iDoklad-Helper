@@ -138,7 +138,7 @@ if (class_exists('IDokladProcessor_ChatGPTIntegration')) {
         </div>
 
         <p class="submit">
-            <button type="submit" class="button button-primary"><?php _e('Save Changes', 'idoklad-invoice-processor'); ?></button>
+            <button type="submit" name="submit" value="1" class="button button-primary"><?php _e('Save Changes', 'idoklad-invoice-processor'); ?></button>
         </p>
     </form>
 </div>
