@@ -74,7 +74,7 @@ if (class_exists('IDokladProcessor_ChatGPTIntegration')) {
                     <td>
                         <select name="chatgpt_model" id="chatgpt_model" style="min-width: 260px;">
                             <?php
-                            $selected_model = get_option('idoklad_chatgpt_model', 'gpt-4o');
+                            $selected_model = get_option('idoklad_chatgpt_model', 'gpt-5-nano');
                             if (!empty($chatgpt_models)) {
                                 foreach ($chatgpt_models as $model_key => $label) {
                                     printf('<option value="%s" %s>%s</option>', esc_attr($model_key), selected($selected_model, $model_key, false), esc_html($label));
@@ -138,7 +138,7 @@ if (class_exists('IDokladProcessor_ChatGPTIntegration')) {
         </div>
 
         <p class="submit">
-            <button type="submit" class="button button-primary"><?php _e('Save Changes', 'idoklad-invoice-processor'); ?></button>
+            <button type="submit" name="submit" value="1" class="button button-primary"><?php _e('Save Changes', 'idoklad-invoice-processor'); ?></button>
         </p>
     </form>
 </div>

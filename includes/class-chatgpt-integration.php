@@ -15,10 +15,18 @@ class IDokladProcessor_ChatGPTIntegration {
     private $max_tokens = 2000;
     private $temperature = 0.1;
     private $max_pdf_size_bytes = 3145728; // 3 MB safety limit for base64 uploads
-    
+    private $last_detected_model = null;
+    private $last_detected_model_was_fallback = false;
+    private $cached_api_models = null;
+    private $cached_api_models_timestamp = 0;
+
     public function __construct() {
         $this->api_key = get_option('idoklad_chatgpt_api_key');
-        $this->model = get_option('idoklad_chatgpt_model', 'gpt-4o');
+        $this->model = get_option('idoklad_chatgpt_model', 'gpt-5-nano');
+
+        if (empty($this->model)) {
+            $this->model = 'gpt-5-nano';
+        }
     }
     
     /**
@@ -199,6 +207,8 @@ class IDokladProcessor_ChatGPTIntegration {
             'User-Agent' => 'WordPress-iDoklad-Processor/1.1.0'
         );
         
+        $this->ensure_effective_model();
+
         $data = array(
             'model' => $this->model,
             'messages' => array(
@@ -272,10 +282,29 @@ class IDokladProcessor_ChatGPTIntegration {
         if (!isset($response_data['choices'][0]['message']['content'])) {
             throw new Exception('Invalid response format from ChatGPT API. Response: ' . $response_body);
         }
-        
+
         return $response_data['choices'][0]['message']['content'];
     }
-    
+
+    private function ensure_effective_model() {
+        $api_models = $this->get_api_available_models();
+
+        if (empty($api_models)) {
+            return;
+        }
+
+        if (!empty($this->model) && in_array($this->model, $api_models, true)) {
+            return;
+        }
+
+        $previous_model = $this->model;
+        $detected_model = $this->auto_detect_best_model($api_models);
+
+        if ($detected_model && $detected_model !== $previous_model && get_option('idoklad_debug_mode')) {
+            error_log(sprintf('iDoklad ChatGPT: Using fallback model "%s" instead of "%s" for current request.', $detected_model, $previous_model));
+        }
+    }
+
     /**
      * Parse ChatGPT response
      */
@@ -901,7 +930,7 @@ class IDokladProcessor_ChatGPTIntegration {
 
         $payload['metadata']['source'] = 'chatgpt';
         $payload['metadata']['generated_at'] = $this->get_current_timestamp();
-        $payload['metadata']['model'] = get_option('idoklad_chatgpt_model', 'gpt-4o');
+        $payload['metadata']['model'] = get_option('idoklad_chatgpt_model', 'gpt-5-nano');
 
         if (!empty($invoice_section['Warnings'])) {
             $payload['metadata']['invoice_warnings'] = $this->normalize_string_list($invoice_section['Warnings']);
@@ -1124,8 +1153,8 @@ class IDokladProcessor_ChatGPTIntegration {
             
             if (!empty($data['invoice_number']) && !empty($data['supplier_name'])) {
                 $message = 'ChatGPT connection successful. Model: ' . $this->model . ', Extracted: ' . $data['invoice_number'] . ' from ' . $data['supplier_name'];
-                if ($detected_model && $detected_model !== get_option('idoklad_chatgpt_model')) {
-                    $message .= ' (Auto-updated to best available model)';
+                if ($detected_model && $this->was_last_detected_model_fallback()) {
+                    $message .= ' (Using fallback model because the preferred model is unavailable)';
                 }
                 return array('success' => true, 'message' => $message);
             } else {
@@ -1141,18 +1170,24 @@ class IDokladProcessor_ChatGPTIntegration {
             if (strpos($e->getMessage(), 'does not exist') !== false || strpos($e->getMessage(), 'not found') !== false) {
                 try {
                     $detected_model = $this->auto_detect_best_model();
-                    if ($detected_model && $detected_model !== $this->model) {
+                    if ($detected_model) {
                         if (get_option('idoklad_debug_mode')) {
                             error_log('iDoklad ChatGPT: Retrying with auto-detected model: ' . $detected_model);
                         }
-                        
+
                         $response = $this->make_api_request($test_prompt);
                         $data = $this->parse_response($response);
-                        
+
                         if (!empty($data['invoice_number']) && !empty($data['supplier_name'])) {
+                            $message = 'ChatGPT connection successful. Model: ' . $this->model . ', Extracted: ' . $data['invoice_number'] . ' from ' . $data['supplier_name'];
+
+                            if ($this->was_last_detected_model_fallback()) {
+                                $message .= ' (Using fallback model because the preferred model is unavailable)';
+                            }
+
                             return array(
-                                'success' => true, 
-                                'message' => 'ChatGPT connection successful. Auto-updated to model: ' . $this->model . ', Extracted: ' . $data['invoice_number'] . ' from ' . $data['supplier_name']
+                                'success' => true,
+                                'message' => $message
                             );
                         }
                     }
@@ -1186,10 +1221,16 @@ class IDokladProcessor_ChatGPTIntegration {
      * Get actually available models from OpenAI API
      */
     public function get_api_available_models() {
+        $cache_ttl = 60; // seconds
+
+        if (is_array($this->cached_api_models) && (time() - $this->cached_api_models_timestamp) < $cache_ttl) {
+            return $this->cached_api_models;
+        }
+
         if (empty($this->api_key)) {
             return array();
         }
-        
+
         try {
             $headers = array(
                 'Authorization' => 'Bearer ' . $this->api_key,
@@ -1224,17 +1265,28 @@ class IDokladProcessor_ChatGPTIntegration {
             
             $available_models = array();
             foreach ($data['data'] as $model) {
-                if (isset($model['id']) && strpos($model['id'], 'gpt') === 0) {
-                    $available_models[$model['id']] = $model['id'];
+                if (!isset($model['id'])) {
+                    continue;
+                }
+
+                $model_id = $model['id'];
+
+                if (strpos($model_id, 'gpt') === 0 || strpos($model_id, 'o') === 0) {
+                    $available_models[$model_id] = $model_id;
                 }
             }
-            
+
+            $this->cached_api_models = $available_models;
+            $this->cached_api_models_timestamp = time();
+
             return $available_models;
-            
+
         } catch (Exception $e) {
             if (get_option('idoklad_debug_mode')) {
                 error_log('iDoklad ChatGPT: Error fetching available models: ' . $e->getMessage());
             }
+            $this->cached_api_models = array();
+            $this->cached_api_models_timestamp = time();
             return array();
         }
     }
@@ -1242,8 +1294,33 @@ class IDokladProcessor_ChatGPTIntegration {
     /**
      * Auto-detect and set the best available model
      */
-    public function auto_detect_best_model() {
-        $api_models = $this->get_api_available_models();
+    public function auto_detect_best_model($api_models = null) {
+        $this->last_detected_model = null;
+        $this->last_detected_model_was_fallback = false;
+
+        if (!is_array($api_models)) {
+            $api_models = $this->get_api_available_models();
+        }
+
+        $manual_preference = (bool) get_option('idoklad_chatgpt_model_manual', 0);
+        $stored_preference = get_option('idoklad_chatgpt_model', null);
+        $current_preference = $stored_preference;
+
+        if ($current_preference === null || $current_preference === '') {
+            $current_preference = 'gpt-5-nano';
+        }
+
+        if (empty($api_models)) {
+            $this->model = $current_preference;
+            $this->last_detected_model = $current_preference;
+            return $current_preference;
+        }
+
+        if (!empty($current_preference) && in_array($current_preference, $api_models, true)) {
+            $this->model = $current_preference;
+            $this->last_detected_model = $current_preference;
+            return $current_preference;
+        }
 
         // Priority order for models (best to fallback)
         $preferred_models = array(
@@ -1253,23 +1330,46 @@ class IDokladProcessor_ChatGPTIntegration {
             'gpt-4',
             'gpt-3.5-turbo'
         );
-        
+
         foreach ($preferred_models as $model) {
-            if (in_array($model, $api_models)) {
+            if (in_array($model, $api_models, true)) {
                 $this->model = $model;
-                update_option('idoklad_chatgpt_model', $model);
+                $this->last_detected_model = $model;
+                $this->last_detected_model_was_fallback = $manual_preference;
+
+                if (!$manual_preference) {
+                    update_option('idoklad_chatgpt_model', $model);
+                    update_option('idoklad_chatgpt_model_manual', 0);
+                }
+
                 return $model;
             }
         }
-        
+
         // If no preferred model is available, use the first available one
         if (!empty($api_models)) {
-            $this->model = array_values($api_models)[0];
-            update_option('idoklad_chatgpt_model', $this->model);
-            return $this->model;
+            $detected = array_values($api_models)[0];
+            $this->model = $detected;
+            $this->last_detected_model = $detected;
+            $this->last_detected_model_was_fallback = $manual_preference;
+
+            if (!$manual_preference) {
+                update_option('idoklad_chatgpt_model', $detected);
+                update_option('idoklad_chatgpt_model_manual', 0);
+            }
+
+            return $detected;
         }
-        
+
         return false;
+    }
+
+    public function get_last_detected_model() {
+        return $this->last_detected_model;
+    }
+
+    public function was_last_detected_model_fallback() {
+        return $this->last_detected_model_was_fallback;
     }
     
     /**

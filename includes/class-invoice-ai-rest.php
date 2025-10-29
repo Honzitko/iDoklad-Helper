@@ -214,7 +214,7 @@ class IDokladProcessor_InvoiceAIRest {
 
             $response_data['debug'] = array(
                 'timestamp' => current_time('mysql'),
-                'model' => get_option('idoklad_chatgpt_model', 'gpt-4o'),
+                'model' => get_option('idoklad_chatgpt_model', 'gpt-5-nano'),
                 'send_to_idoklad' => (bool) $send_to_idoklad,
                 'email_from' => $email_for_storage,
             );
