@@ -368,6 +368,10 @@ class IDokladProcessor_Admin {
             if (isset($_POST[$field])) {
                 $value = call_user_func($callback, $_POST[$field]);
                 update_option('idoklad_' . $field, $value);
+
+                if ($field === 'chatgpt_model') {
+                    update_option('idoklad_chatgpt_model_manual', 1);
+                }
             }
         }
 
@@ -1270,7 +1274,7 @@ class IDokladProcessor_Admin {
             }
 
             wp_send_json_success(array(
-                'model' => get_option('idoklad_chatgpt_model', 'gpt-4o'),
+                'model' => get_option('idoklad_chatgpt_model', 'gpt-5-nano'),
                 'text_length' => strlen($pdf_text),
                 'text_preview' => $text_preview,
                 'extracted_data' => $extracted_data,
