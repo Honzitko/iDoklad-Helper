@@ -22,6 +22,19 @@ $stats = array(
     'last_processed' => $wpdb->get_var("SELECT MAX(processed_at) FROM $queue_table WHERE status = 'completed'")
 );
 
+$numeric_stat_keys = array('pending', 'processing', 'completed', 'failed', 'total', 'today');
+foreach ($numeric_stat_keys as $key) {
+    $stats[$key] = isset($stats[$key]) ? (int) $stats[$key] : 0;
+}
+
+$last_processed_timestamp = false;
+if (!empty($stats['last_processed'])) {
+    $parsed_time = strtotime($stats['last_processed']);
+    if ($parsed_time !== false) {
+        $last_processed_timestamp = $parsed_time;
+    }
+}
+
 // Get recent queue items
 $recent_items = $wpdb->get_results("SELECT * FROM $queue_table ORDER BY created_at DESC LIMIT 10");
 
@@ -31,6 +44,10 @@ $recent_logs = $wpdb->get_results("SELECT * FROM $logs_table ORDER BY created_at
 // Get settings status
 $email_monitor_enabled = get_option('idoklad_enable_email_monitor', false);
 $authorized_users = IDokladProcessor_Database::get_all_authorized_users();
+
+$recent_items = is_array($recent_items) ? $recent_items : array();
+$recent_logs = is_array($recent_logs) ? $recent_logs : array();
+$authorized_users = is_array($authorized_users) ? $authorized_users : array();
 ?>
 
 <div class="wrap">
@@ -140,8 +157,8 @@ $authorized_users = IDokladProcessor_Database::get_all_authorized_users();
                     <tr>
                         <td><strong><?php _e('Last Processed', 'idoklad-invoice-processor'); ?></strong></td>
                         <td>
-                            <?php if ($stats['last_processed']): ?>
-                                <?php echo human_time_diff(strtotime($stats['last_processed']), current_time('timestamp')) . ' ago'; ?>
+                            <?php if ($last_processed_timestamp): ?>
+                                <?php echo esc_html(human_time_diff($last_processed_timestamp, current_time('timestamp')) . ' ' . __('ago', 'idoklad-invoice-processor')); ?>
                             <?php else: ?>
                                 <?php _e('Never', 'idoklad-invoice-processor'); ?>
                             <?php endif; ?>

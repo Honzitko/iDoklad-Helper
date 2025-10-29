@@ -239,14 +239,46 @@ class IDokladProcessor_Database {
     public static function get_logs($limit = 50, $offset = 0) {
         global $wpdb;
         $table = $wpdb->prefix . 'idoklad_logs';
-        
+
         return $wpdb->get_results($wpdb->prepare(
             "SELECT * FROM $table ORDER BY created_at DESC LIMIT %d OFFSET %d",
             $limit,
             $offset
         ));
     }
-    
+
+    /**
+     * Find the latest log entry ID matching provided email metadata.
+     */
+    public static function find_latest_log_id($email_from, $email_subject = '', $attachment_name = '') {
+        if (empty($email_from)) {
+            return null;
+        }
+
+        global $wpdb;
+        $table = $wpdb->prefix . 'idoklad_logs';
+
+        $conditions = array('email_from = %s');
+        $params = array($email_from);
+
+        if (!empty($email_subject)) {
+            $conditions[] = 'email_subject = %s';
+            $params[] = $email_subject;
+        }
+
+        if (!empty($attachment_name)) {
+            $conditions[] = 'attachment_name = %s';
+            $params[] = $attachment_name;
+        }
+
+        $where_clause = implode(' AND ', $conditions);
+        $sql = "SELECT id FROM $table WHERE $where_clause ORDER BY id DESC LIMIT 1";
+
+        $log_id = $wpdb->get_var($wpdb->prepare($sql, $params));
+
+        return $log_id ? (int) $log_id : null;
+    }
+
     /**
      * Add email to processing queue
      */
