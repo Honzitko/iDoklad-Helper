@@ -73,12 +73,31 @@ class IDokladProcessor_Database {
             KEY status (status),
             KEY created_at (created_at)
         ) $charset_collate;";
+
+        $table_rest_messages = $wpdb->prefix . 'idoklad_rest_messages';
+        $sql_rest_messages = "CREATE TABLE $table_rest_messages (
+            id mediumint(9) NOT NULL AUTO_INCREMENT,
+            route varchar(190) NOT NULL,
+            http_method varchar(20) NOT NULL,
+            user_id bigint(20) unsigned DEFAULT NULL,
+            request_payload longtext DEFAULT NULL,
+            response_payload longtext DEFAULT NULL,
+            status_code smallint(5) DEFAULT NULL,
+            log_reference mediumint(9) DEFAULT NULL,
+            created_at datetime DEFAULT CURRENT_TIMESTAMP,
+            updated_at datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (id),
+            KEY route (route),
+            KEY status_code (status_code),
+            KEY created_at (created_at)
+        ) $charset_collate;";
         
         require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
         
         dbDelta($sql_users);
         dbDelta($sql_logs);
         dbDelta($sql_queue);
+        dbDelta($sql_rest_messages);
         
         // Log the table creation
         error_log('iDoklad Invoice Processor: Database tables created successfully');
@@ -232,7 +251,93 @@ class IDokladProcessor_Database {
             array('%d')
         );
     }
-    
+
+    /**
+     * Store REST API interaction details
+     */
+    public static function add_rest_message($data) {
+        global $wpdb;
+        $table = $wpdb->prefix . 'idoklad_rest_messages';
+
+        $insert_data = array(
+            'route' => $data['route'],
+            'http_method' => $data['http_method'],
+            'request_payload' => isset($data['request_payload']) ? wp_json_encode($data['request_payload']) : null,
+        );
+
+        $format = array('%s', '%s', '%s');
+
+        if (isset($data['user_id'])) {
+            $insert_data['user_id'] = (int) $data['user_id'];
+            $format[] = '%d';
+        }
+
+        if (isset($data['response_payload'])) {
+            $insert_data['response_payload'] = wp_json_encode($data['response_payload']);
+            $format[] = '%s';
+        }
+
+        if (isset($data['status_code'])) {
+            $insert_data['status_code'] = (int) $data['status_code'];
+            $format[] = '%d';
+        }
+
+        if (isset($data['log_reference'])) {
+            $insert_data['log_reference'] = (int) $data['log_reference'];
+            $format[] = '%d';
+        }
+
+        $inserted = $wpdb->insert($table, $insert_data, $format);
+
+        if (!$inserted) {
+            return false;
+        }
+
+        return (int) $wpdb->insert_id;
+    }
+
+    /**
+     * Update REST API interaction details
+     */
+    public static function update_rest_message($id, $data) {
+        global $wpdb;
+        $table = $wpdb->prefix . 'idoklad_rest_messages';
+
+        $update_data = array();
+        $format = array();
+
+        if (isset($data['request_payload'])) {
+            $update_data['request_payload'] = wp_json_encode($data['request_payload']);
+            $format[] = '%s';
+        }
+
+        if (isset($data['response_payload'])) {
+            $update_data['response_payload'] = wp_json_encode($data['response_payload']);
+            $format[] = '%s';
+        }
+
+        if (isset($data['status_code'])) {
+            $update_data['status_code'] = (int) $data['status_code'];
+            $format[] = '%d';
+        }
+
+        if (isset($data['log_reference'])) {
+            $update_data['log_reference'] = (int) $data['log_reference'];
+            $format[] = '%d';
+        }
+
+        if (isset($data['user_id'])) {
+            $update_data['user_id'] = (int) $data['user_id'];
+            $format[] = '%d';
+        }
+
+        if (empty($update_data)) {
+            return false;
+        }
+
+        return (bool) $wpdb->update($table, $update_data, array('id' => $id), $format, array('%d'));
+    }
+
     /**
      * Get processing logs
      */
