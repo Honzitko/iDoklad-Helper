@@ -12,7 +12,7 @@ class IDokladProcessor_ChatGPTIntegration {
     private $api_key;
     private $model;
     private $base_url = 'https://api.openai.com/v1/chat/completions';
-    private $max_tokens = 2000;
+    private $max_completion_tokens = 2000;
     private $temperature = 0.1;
     private $max_pdf_size_bytes = 3145728; // 3 MB safety limit for base64 uploads
     private $last_detected_model = null;
@@ -221,7 +221,7 @@ class IDokladProcessor_ChatGPTIntegration {
                     'content' => $prompt
                 )
             ),
-            'max_tokens' => $this->max_tokens,
+            'max_completion_tokens' => $this->max_completion_tokens,
             'temperature' => $this->temperature,
             'response_format' => array('type' => 'json_object')
         );
@@ -1434,7 +1434,7 @@ class IDokladProcessor_ChatGPTIntegration {
         // For now, return basic info
         return array(
             'model' => $this->model,
-            'max_tokens' => $this->max_tokens,
+            'max_completion_tokens' => $this->max_completion_tokens,
             'temperature' => $this->temperature
         );
     }
