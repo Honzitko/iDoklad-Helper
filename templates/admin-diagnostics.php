@@ -46,35 +46,6 @@ $users = IDokladProcessor_Database::get_all_authorized_users();
                 </div>
             </div>
             
-            <!-- Test 2: OCR on PDF -->
-            <div class="idoklad-settings-section">
-                <h2>🔍 <?php _e('Test OCR (Scanned PDFs)', 'idoklad-invoice-processor'); ?></h2>
-                <p><?php _e('Test OCR text extraction on scanned PDF invoices.', 'idoklad-invoice-processor'); ?></p>
-                
-                <form id="test-ocr-form" enctype="multipart/form-data">
-                    <table class="form-table">
-                        <tr>
-                            <th scope="row"><?php _e('Upload Scanned PDF', 'idoklad-invoice-processor'); ?></th>
-                            <td>
-                                <input type="file" name="pdf_file" id="ocr-pdf-input" accept=".pdf" required />
-                                <p class="description"><?php _e('Select a scanned/image-based PDF to test OCR', 'idoklad-invoice-processor'); ?></p>
-                            </td>
-                        </tr>
-                    </table>
-                    
-                    <p>
-                        <button type="submit" class="button button-primary">
-                            <?php _e('Test OCR', 'idoklad-invoice-processor'); ?>
-                        </button>
-                    </p>
-                </form>
-                
-                <div id="ocr-result" style="display:none; margin-top:20px;">
-                    <h3><?php _e('OCR Results', 'idoklad-invoice-processor'); ?></h3>
-                    <div id="ocr-content"></div>
-                </div>
-            </div>
-
             <!-- Test ChatGPT Extraction -->
             <div class="idoklad-settings-section">
                 <h2>🤖 <?php _e('Test ChatGPT Invoice Extraction', 'idoklad-invoice-processor'); ?></h2>
@@ -93,7 +64,7 @@ $users = IDokladProcessor_Database::get_all_authorized_users();
                             <th scope="row"><?php _e('Invoice Text (optional)', 'idoklad-invoice-processor'); ?></th>
                             <td>
                                 <textarea id="chatgpt-text-input" name="pdf_text" rows="8" style="width:100%; max-width:600px; font-family: monospace;" placeholder="Paste extracted invoice text here..."></textarea>
-                                <p class="description"><?php _e('Provide text if you prefer to bypass PDF parsing. You can reuse the output from the PDF or OCR tests.', 'idoklad-invoice-processor'); ?></p>
+                                <p class="description"><?php _e('Provide text if you prefer to bypass PDF parsing. You can reuse the output from the PDF parsing test.', 'idoklad-invoice-processor'); ?></p>
                             </td>
                         </tr>
                     </table>
@@ -225,7 +196,6 @@ echo htmlspecialchars(json_encode(array(
                 <ul style="font-size: 12px; line-height: 1.6;">
                     <li><?php _e('Test with real invoice PDFs for accurate results', 'idoklad-invoice-processor'); ?></li>
                     <li><?php _e('Check parsing time to identify slow methods', 'idoklad-invoice-processor'); ?></li>
-                    <li><?php _e('Use OCR test for scanned/image-based PDFs', 'idoklad-invoice-processor'); ?></li>
                     <li><?php _e('Copy extracted text between tests using buttons', 'idoklad-invoice-processor'); ?></li>
                     <li><?php _e('Zapier response can be used to test iDoklad', 'idoklad-invoice-processor'); ?></li>
                 </ul>
@@ -235,22 +205,6 @@ echo htmlspecialchars(json_encode(array(
             <div class="idoklad-widget">
                 <h3><?php _e('Current Settings', 'idoklad-invoice-processor'); ?></h3>
                 <table style="width:100%; font-size:12px;">
-                    <tr>
-                        <td><strong><?php _e('Native Parser:', 'idoklad-invoice-processor'); ?></strong></td>
-                        <td><?php echo get_option('idoklad_use_native_parser_first') ? '✓ Yes' : '✗ No'; ?></td>
-                    </tr>
-                    <tr>
-                        <td><strong><?php _e('OCR Enabled:', 'idoklad-invoice-processor'); ?></strong></td>
-                        <td><?php echo get_option('idoklad_enable_ocr') ? '✓ Yes' : '✗ No'; ?></td>
-                    </tr>
-                    <tr>
-                        <td><strong><?php _e('Cloud OCR:', 'idoklad-invoice-processor'); ?></strong></td>
-                        <td><?php echo get_option('idoklad_use_cloud_ocr') ? '✓ Yes' : '✗ No'; ?></td>
-                    </tr>
-                    <tr>
-                        <td><strong><?php _e('OCR Service:', 'idoklad-invoice-processor'); ?></strong></td>
-                        <td><?php echo get_option('idoklad_cloud_ocr_service', 'none'); ?></td>
-                    </tr>
                     <tr>
                         <td><strong><?php _e('Zapier URL:', 'idoklad-invoice-processor'); ?></strong></td>
                         <td><?php echo get_option('idoklad_zapier_webhook_url') ? '✓ Set' : '✗ Not set'; ?></td>

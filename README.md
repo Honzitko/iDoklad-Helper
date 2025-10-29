@@ -37,7 +37,7 @@ A comprehensive WordPress plugin that automates invoice processing through email
 - **Comprehensive Logging** - Detailed logs for debugging and monitoring
 
 ### Advanced Features
-- **Multiple Parsing Methods** - AI parsing, native text extraction, OCR support
+- **PDF.co Parsing Pipeline** - Unified AI parsing with automatic handling of scanned PDFs
 - **Data Validation** - Validates extracted data against iDoklad requirements
 - **Error Handling** - Comprehensive error handling with notifications
 - **Admin Dashboard** - Complete admin interface for management
@@ -152,7 +152,7 @@ Add users who can receive invoices with their own iDoklad credentials
 #### 3. Diagnostics
 - **Location**: WordPress Admin → iDoklad Processor → Diagnostics & Testing
 - **Purpose**: System diagnostics and testing tools
-- **Features**: PDF parsing tests, OCR tests, API tests
+- **Features**: PDF parsing checks, ChatGPT validation, API tests
 
 ### Maintenance
 

@@ -111,11 +111,10 @@ When debug mode is enabled, you'll see logs like:
 
 ```
 [21-Oct-2024 10:30:01] iDoklad Email Monitor: Processing 3 pending emails
-[21-Oct-2024 10:30:02] iDoklad PDF Processor: Extracting text from /path/to/invoice.pdf
-[21-Oct-2024 10:30:02] iDoklad PDF Processor: Trying native PHP parser
-[21-Oct-2024 10:30:03] iDoklad PDF Processor: Native PHP parser succeeded
-[21-Oct-2024 10:30:03] iDoklad PDF Processor: Extracted 1234 characters of text using: native PHP parser
-[21-Oct-2024 10:30:04] iDoklad Email Monitor: Zapier processing successful
+[21-Oct-2024 10:30:02] iDoklad PDF Processor: Uploading /path/to/invoice.pdf to PDF.co
+[21-Oct-2024 10:30:03] iDoklad PDF Processor: PDF.co extraction succeeded
+[21-Oct-2024 10:30:03] iDoklad PDF Processor: Extracted 1234 characters of text via PDF.co
+[21-Oct-2024 10:30:04] iDoklad ChatGPT: Validation successful
 [21-Oct-2024 10:30:05] iDoklad Email Monitor: Successfully processed email from supplier@example.com
 ```
 
@@ -130,11 +129,11 @@ When debug mode is enabled, you'll see logs like:
 **Solution:** Add user in **Authorized Users** tab
 
 ### "Could not extract text from PDF"
-**Cause:** Scanned PDF or unsupported format  
+**Cause:** Scanned PDF or unsupported format
 **Solutions:**
-- Enable OCR in settings
-- Configure OCR.space API
-- Test PDF manually
+- Confirm your PDF.co API key is valid and has credits
+- Download the PDF to ensure it's not password protected or corrupted
+- Run the ChatGPT extraction test to review the full API response
 
 ### "Zapier processing failed"
 **Cause:** Webhook URL incorrect or Zapier down  
@@ -164,7 +163,6 @@ When debug mode is enabled, you'll see logs like:
 Go to each settings tab and click test buttons:
 - ✅ Test Email Connection
 - ✅ Test Zapier Webhook  
-- ✅ Test OCR.space API (if using scanned PDFs)
 - ✅ Test iDoklad Connection (for each user)
 
 ### 2. Review Queue Timeline

@@ -290,8 +290,8 @@ templates/
 
 ### Diagnostics Page:
 - Test PDF parsing
-- Test OCR
-- Test Zapier webhook
+- Test ChatGPT extraction
+- Test Zapier webhook (legacy)
 - Test iDoklad API
 - See full API responses
 
