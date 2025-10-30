@@ -87,6 +87,7 @@ class IDokladProcessor_EmailMonitor {
         }
 
         $chatgpt = new IDokladProcessor_ChatGPTIntegration();
+        $pdfco = new IDokladProcessor_PDFCoProcessor();
         $client_id = get_option('idoklad_client_id');
         $client_secret = get_option('idoklad_client_secret');
 
@@ -141,27 +142,32 @@ class IDokladProcessor_EmailMonitor {
 
                     $attachment_name = $this->get_queue_attachment_name($item);
 
-                    IDokladProcessor_Database::add_queue_step($item_id, 'ChatGPT extraction started', array(
+                    IDokladProcessor_Database::add_queue_step($item_id, 'PDF.co extraction started', array(
                         'attachment' => $attachment_name,
                         'filesize' => $file_size,
                     ));
 
-                    $parsed_data = $chatgpt->extract_invoice_data_from_pdf($attachment_path, array(
+                    $pdf_text = $pdfco->extract_text($attachment_path, array(
+                        'queue_id' => $item_id,
+                        'file_name' => $attachment_name,
+                    ));
+
+                    IDokladProcessor_Database::add_queue_step($item_id, 'PDF.co extraction complete', array(
+                        'text_length' => strlen($pdf_text),
+                    ));
+
+                    $payload = $chatgpt->generate_idoklad_payload_from_text($pdf_text, array(
                         'email_from' => $item->email_from,
                         'email_subject' => $item->email_subject,
                         'queue_id' => $item_id,
                         'file_name' => $attachment_name,
                     ));
 
-                    IDokladProcessor_Database::add_queue_step($item_id, 'ChatGPT extraction complete', $this->summarize_chatgpt_output($parsed_data));
+                    $parsed_data = $this->wrap_payload_for_logging($payload, $pdf_text);
 
-                    $payload = $chatgpt->build_idoklad_payload($parsed_data, array(
-                        'email_from' => $item->email_from,
-                        'email_subject' => $item->email_subject,
-                        'queue_id' => $item_id,
-                    ));
+                    IDokladProcessor_Database::add_queue_step($item_id, 'ChatGPT payload prepared', $this->summarize_chatgpt_output($parsed_data));
 
-                    IDokladProcessor_Database::add_queue_step($item_id, 'iDoklad payload prepared', $this->summarize_payload($payload));
+                    IDokladProcessor_Database::add_queue_step($item_id, 'iDoklad payload ready', $this->summarize_payload($payload));
 
                     if (empty($client_id) || empty($client_secret)) {
                         throw new Exception('iDoklad API credentials are not configured');
@@ -413,6 +419,24 @@ class IDokladProcessor_EmailMonitor {
     private function summarize_chatgpt_output($parsed_data) {
         $parsed_array = is_array($parsed_data) ? $parsed_data : array();
 
+        if (isset($parsed_array['payload']) && is_array($parsed_array['payload'])) {
+            $payload = $parsed_array['payload'];
+            $summary = array(
+                'payload_keys' => array_slice(array_keys($payload), 0, 10),
+                'items_count' => (isset($payload['Items']) && is_array($payload['Items'])) ? count($payload['Items']) : 0,
+            );
+
+            if (!empty($payload['DocumentNumber'])) {
+                $summary['document_number'] = $payload['DocumentNumber'];
+            }
+
+            if (!empty($parsed_array['warnings']) && is_array($parsed_array['warnings'])) {
+                $summary['warnings'] = array_slice($parsed_array['warnings'], 0, 5);
+            }
+
+            return $summary;
+        }
+
         $summary = array(
             'detected_keys' => array_slice(array_keys($parsed_array), 0, 10),
             'items_count' => (isset($parsed_array['items']) && is_array($parsed_array['items'])) ? count($parsed_array['items']) : 0,
@@ -432,9 +456,16 @@ class IDokladProcessor_EmailMonitor {
     private function summarize_payload($payload) {
         $payload_array = is_array($payload) ? $payload : array();
 
+        $total_amount = null;
+        if (isset($payload_array['TotalAmount'])) {
+            $total_amount = $payload_array['TotalAmount'];
+        } elseif (isset($payload_array['TotalWithVat'])) {
+            $total_amount = $payload_array['TotalWithVat'];
+        }
+
         $summary = array(
             'document_number' => $payload_array['DocumentNumber'] ?? ($payload_array['document_number'] ?? ''),
-            'total_amount' => isset($payload_array['TotalAmount']) ? $payload_array['TotalAmount'] : null,
+            'total_amount' => $total_amount,
             'items' => (isset($payload_array['Items']) && is_array($payload_array['Items'])) ? count($payload_array['Items']) : 0,
             'currency' => $payload_array['Currency'] ?? ($payload_array['CurrencyCode'] ?? ''),
         );
@@ -442,6 +473,46 @@ class IDokladProcessor_EmailMonitor {
         return array_filter($summary, function ($value) {
             return $value !== null && $value !== '';
         });
+    }
+
+    private function wrap_payload_for_logging($payload, $pdf_text) {
+        $payload_array = is_array($payload) ? $payload : array();
+
+        $wrapped = array(
+            'payload' => $payload_array,
+            'source' => 'chatgpt_payload',
+        );
+
+        if (isset($payload_array['Items']) && is_array($payload_array['Items'])) {
+            $wrapped['items'] = $payload_array['Items'];
+        }
+
+        if (!empty($payload_array['DocumentNumber'])) {
+            $wrapped['invoice_number'] = $payload_array['DocumentNumber'];
+        }
+
+        if (isset($payload_array['warnings'])) {
+            $wrapped['warnings'] = is_array($payload_array['warnings']) ? $payload_array['warnings'] : array($payload_array['warnings']);
+        }
+
+        if (!empty($pdf_text)) {
+            $wrapped['pdf_text_preview'] = $this->create_text_preview($pdf_text);
+            $wrapped['text_length'] = strlen($pdf_text);
+        }
+
+        return $wrapped;
+    }
+
+    private function create_text_preview($text) {
+        if (empty($text)) {
+            return '';
+        }
+
+        if (function_exists('mb_substr')) {
+            return mb_substr($text, 0, 500);
+        }
+
+        return substr($text, 0, 500);
     }
 
     private function update_log_processing($log_id) {

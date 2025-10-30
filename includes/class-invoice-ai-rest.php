@@ -168,6 +168,7 @@ class IDokladProcessor_InvoiceAIRest {
         }
 
         $chatgpt = new IDokladProcessor_ChatGPTIntegration();
+        $pdfco = new IDokladProcessor_PDFCoProcessor();
         $context = array(
             'file_name' => $attachment_name,
             'email_from' => $email_for_storage,
@@ -175,14 +176,13 @@ class IDokladProcessor_InvoiceAIRest {
         );
 
         if (!empty($invoice_text)) {
-            $parsed = $chatgpt->extract_invoice_data_from_text($invoice_text, $context);
+            $pdf_text = $invoice_text;
         } else {
-            $parsed = $chatgpt->extract_invoice_data_from_pdf($pdf_path, $context);
+            $pdf_text = $pdfco->extract_text($pdf_path, $context);
         }
-            $payload = $chatgpt->build_idoklad_payload($parsed, array(
-                'email_from' => $email_for_storage,
-                'email_subject' => $email_subject,
-            ));
+
+        $payload = $chatgpt->generate_idoklad_payload_from_text($pdf_text, $context);
+        $parsed = $this->prepare_payload_metadata($payload, $pdf_text);
 
             if ($log_id) {
                 $log_update = array(
@@ -275,6 +275,48 @@ class IDokladProcessor_InvoiceAIRest {
                 unlink($temp_file);
             }
         }
+    }
+
+    private function prepare_payload_metadata($payload, $pdf_text) {
+        $payload_array = is_array($payload) ? $payload : array();
+
+        $metadata = array(
+            'payload' => $payload_array,
+            'source' => 'chatgpt_payload',
+        );
+
+        if (isset($payload_array['Items']) && is_array($payload_array['Items'])) {
+            $metadata['items'] = $payload_array['Items'];
+        }
+
+        if (!empty($payload_array['DocumentNumber'])) {
+            $metadata['invoice_number'] = $payload_array['DocumentNumber'];
+        }
+
+        if (isset($payload_array['warnings'])) {
+            $metadata['warnings'] = is_array($payload_array['warnings'])
+                ? $payload_array['warnings']
+                : array($payload_array['warnings']);
+        }
+
+        if (!empty($pdf_text)) {
+            $metadata['pdf_text_preview'] = $this->create_text_preview($pdf_text);
+            $metadata['text_length'] = strlen($pdf_text);
+        }
+
+        return $metadata;
+    }
+
+    private function create_text_preview($text) {
+        if (empty($text)) {
+            return '';
+        }
+
+        if (function_exists('mb_substr')) {
+            return mb_substr($text, 0, 500);
+        }
+
+        return substr($text, 0, 500);
     }
 
     private function download_invoice($url) {
