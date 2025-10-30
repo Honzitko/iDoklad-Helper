@@ -1279,26 +1279,44 @@ class IDokladProcessor_Admin {
             $pdf_text = trim($pdf_text);
 
             $chatgpt = new IDokladProcessor_ChatGPTIntegration();
+            $pdfco = new IDokladProcessor_PDFCoProcessor();
             $context = array(
                 'file_name' => $file_name,
             );
 
-            if (!empty($pdf_text)) {
-                $extracted_data = $chatgpt->extract_invoice_data_from_text($pdf_text, $context);
-            } elseif (!empty($temp_file)) {
-                $extracted_data = $chatgpt->extract_invoice_data_from_pdf($temp_file, $context);
-            } else {
+            if (empty($pdf_text) && !empty($temp_file)) {
+                $pdf_text = $pdfco->extract_text($temp_file, $context);
+            }
+
+            if (empty($pdf_text)) {
                 throw new Exception(__('Provide a PDF file or extracted text to run the ChatGPT test.', 'idoklad-invoice-processor'));
             }
 
-            // Attach diagnostics metadata
-            $extracted_data['source'] = 'chatgpt';
+            $idoklad_payload = $chatgpt->generate_idoklad_payload_from_text($pdf_text, $context);
+
+            $extracted_data = array(
+                'payload' => $idoklad_payload,
+                'source' => 'chatgpt_payload',
+            );
+
+            if (isset($idoklad_payload['Items']) && is_array($idoklad_payload['Items'])) {
+                $extracted_data['items'] = $idoklad_payload['Items'];
+            }
+
+            if (!empty($idoklad_payload['DocumentNumber'])) {
+                $extracted_data['invoice_number'] = $idoklad_payload['DocumentNumber'];
+            }
+
+            if (isset($idoklad_payload['warnings'])) {
+                $extracted_data['warnings'] = is_array($idoklad_payload['warnings'])
+                    ? $idoklad_payload['warnings']
+                    : array($idoklad_payload['warnings']);
+            }
 
             if (!empty($pdf_text)) {
                 $extracted_data['pdf_text_preview'] = function_exists('mb_substr') ? mb_substr($pdf_text, 0, 500) : substr($pdf_text, 0, 500);
+                $extracted_data['text_length'] = strlen($pdf_text);
             }
-
-            $idoklad_payload = $chatgpt->build_idoklad_payload($extracted_data, $context);
 
             $text_preview = '';
             if (!empty($pdf_text)) {

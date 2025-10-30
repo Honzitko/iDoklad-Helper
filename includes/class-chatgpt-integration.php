@@ -71,6 +71,44 @@ class IDokladProcessor_ChatGPTIntegration {
         }
     }
 
+    public function generate_idoklad_payload_from_text($pdf_text, $context = array()) {
+        if (empty($this->api_key)) {
+            throw new Exception('ChatGPT API key is not configured');
+        }
+
+        $prompt = $this->build_payload_prompt($pdf_text, $context);
+
+        try {
+            $response = $this->make_api_request($prompt);
+
+            if (!$response) {
+                throw new Exception('No response from ChatGPT API');
+            }
+
+            $payload = $this->parse_response($response, false);
+
+            if (!is_array($payload)) {
+                throw new Exception('ChatGPT did not return a valid JSON object for the iDoklad payload.');
+            }
+
+            if (isset($payload['Invoice']) && is_array($payload['Invoice'])) {
+                $payload = $payload['Invoice'];
+            } elseif (isset($payload['invoice']) && is_array($payload['invoice'])) {
+                $payload = $payload['invoice'];
+            }
+
+            if (get_option('idoklad_debug_mode')) {
+                error_log('iDoklad ChatGPT: Generated iDoklad payload: ' . json_encode($payload));
+            }
+
+            return $payload;
+
+        } catch (Exception $e) {
+            error_log('iDoklad ChatGPT Payload Error: ' . $e->getMessage());
+            throw $e;
+        }
+    }
+
     /**
      * Extract invoice data directly from a PDF file by sending a base64 payload to ChatGPT.
      */
@@ -146,6 +184,28 @@ class IDokladProcessor_ChatGPTIntegration {
         }
 
         $prompt .= "\n\nInvoice Text:\n" . $pdf_text . "\n\nPlease return only valid JSON without any additional text or formatting.";
+
+        return $prompt;
+    }
+
+    private function build_payload_prompt($pdf_text, $context = array()) {
+        $context_summary = $this->summarize_context($context);
+
+        $max_text_length = 8000;
+        if (strlen($pdf_text) > $max_text_length) {
+            $pdf_text = substr($pdf_text ?: '', 0, $max_text_length) . '... [truncated]';
+        }
+
+        $prompt = 'You are an assistant that prepares payloads for the iDoklad REST API v3 endpoint POST /IssuedDocuments/IssuedInvoices.';
+        $prompt .= '\nReturn a JSON object that can be sent directly to the API. Use the correct property casing (e.g. DocumentNumber, DateOfIssue, DateOfMaturity, CurrencyCode, Items).';
+        $prompt .= '\nFill in as much detail as the invoice text provides. Keep monetary values as numbers. Include Items as an array of line items with Name, Quantity, UnitPrice, VatRateType, and TotalWithVat when available. Add partner_data details when supplier information is available. If certain data is unknown, set it to null or omit it.';
+        $prompt .= '\nDo not wrap the response in any explanatory text.';
+
+        if (!empty($context_summary)) {
+            $prompt .= "\n\nContext:\n" . $context_summary;
+        }
+
+        $prompt .= "\n\nInvoice Text:\n" . $pdf_text . "\n\nReturn only the JSON payload.";
 
         return $prompt;
     }
@@ -308,24 +368,28 @@ class IDokladProcessor_ChatGPTIntegration {
     /**
      * Parse ChatGPT response
      */
-    private function parse_response($response) {
+    private function parse_response($response, $normalize = true) {
         // Clean up response
         $response = trim($response);
-        
+
         // Remove any markdown formatting
         $response = preg_replace('/```json\s*/', '', $response);
         $response = preg_replace('/```\s*$/', '', $response);
         
         // Try to parse JSON
         $data = json_decode($response, true);
-        
+
         if (json_last_error() !== JSON_ERROR_NONE) {
             throw new Exception('Invalid JSON response from ChatGPT: ' . json_last_error_msg());
         }
-        
+
+        if (!$normalize) {
+            return $data;
+        }
+
         // Validate and normalize data
         $normalized_data = $this->normalize_extracted_data($data);
-        
+
         return $normalized_data;
     }
     
